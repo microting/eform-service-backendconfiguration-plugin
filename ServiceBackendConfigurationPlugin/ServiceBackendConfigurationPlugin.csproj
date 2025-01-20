@@ -16,7 +16,7 @@
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.0.1" />
     <PackageReference Include="HtmlToOpenXml.dll" Version="3.2.2" />
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="9.0.1" />
-    <PackageReference Include="Microting.eForm" Version="9.0.7" />
+    <PackageReference Include="Microting.eForm" Version="9.0.8" />
     <PackageReference Include="Microting.EformAngularFrontendBase" Version="9.0.4" />
     <PackageReference Include="Microting.EformBackendConfigurationBase" Version="9.0.1" />
     <PackageReference Include="Microting.eFormCaseTemplateBase" Version="8.0.71" />
