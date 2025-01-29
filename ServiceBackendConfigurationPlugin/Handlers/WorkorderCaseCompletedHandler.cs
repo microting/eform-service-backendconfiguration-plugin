@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using ImageMagick;
 using JetBrains.Annotations;
 using Microsoft.EntityFrameworkCore;
+using Microting.eForm.Dto;
 using Microting.eForm.Helpers;
 using Microting.eForm.Infrastructure.Constants;
 using Microting.eForm.Infrastructure.Data.Entities;
@@ -209,6 +210,7 @@ public class WorkOrderCaseCompletedHandler(
             await newWorkOrderCase.Create(backendConfigurationPnDbContext);
 
             var picturesOfTasks = new List<string>();
+            var picturesOfTasksList = new List<KeyValuePair<string, string>>();
             bool hasImages = false;
             foreach (var pictureFieldValue in pictureFieldValues.Where(pictureFieldValue =>
                          pictureFieldValue.UploadedDataId != null))
@@ -222,6 +224,7 @@ public class WorkOrderCaseCompletedHandler(
                 };
 
                 picturesOfTasks.Add($"{uploadedData.Id}_700_{uploadedData.Checksum}{uploadedData.Extension}");
+                picturesOfTasksList.Add(new KeyValuePair<string, string>($"{uploadedData.Id}_700_{uploadedData.Checksum}{uploadedData.Extension}", uploadedData.Checksum));
                 await workOrderCaseImage.Create(backendConfigurationPnDbContext);
                 hasImages = true;
             }
@@ -270,7 +273,7 @@ public class WorkOrderCaseCompletedHandler(
             await DeployWorkOrderEform(propertyWorkers, eformIdForOngoingTasks,
                 property, label, CaseStatusesEnum.Ongoing, newWorkOrderCase,
                 commentFieldValue.Value, int.Parse(deviceUsersGroup.MicrotingUid), hash,
-                assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages);
+                assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages, picturesOfTasksList);
         }
         else if (eformIdForOngoingTasks == dbCase.CheckListId && workOrderCase != null)
         {
@@ -372,6 +375,7 @@ public class WorkOrderCaseCompletedHandler(
             var updatedByName = updatedBySite.Name;
 
             var picturesOfTasks = new List<string>();
+            var picturesOfTasksList = new List<KeyValuePair<string, string>>();
             bool hasImages = false;
             foreach (var pictureFieldValue in pictureFieldValues)
             {
@@ -386,6 +390,7 @@ public class WorkOrderCaseCompletedHandler(
                     };
 
                     picturesOfTasks.Add($"{uploadedData.Id}_700_{uploadedData.Checksum}{uploadedData.Extension}");
+                    picturesOfTasksList.Add(new KeyValuePair<string, string>($"{uploadedData.Id}_700_{uploadedData.Checksum}{uploadedData.Extension}", uploadedData.Checksum));
                     await workOrderCaseImage.Create(backendConfigurationPnDbContext);
                     hasImages = true;
                 }
@@ -458,7 +463,7 @@ public class WorkOrderCaseCompletedHandler(
             // deploy eform to ongoing status
             await DeployWorkOrderEform(propertyWorkers, eformIdForOngoingTasks, property, description,
                 workOrderCase.CaseStatusesEnum, workOrderCase, commentFieldValue.Value, int.Parse(deviceUsersGroupUid),
-                hash, assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages);
+                hash, assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages, picturesOfTasksList);
         }
     }
 
@@ -475,7 +480,9 @@ public class WorkOrderCaseCompletedHandler(
         Site assignedSite,
         string pushMessageBody,
         string pushMessageTitle,
-        string updatedByName, bool hasImages)
+        string updatedByName,
+        bool hasImages,
+        List<KeyValuePair<string, string>> picturesOfTasks)
     {
         Console.WriteLine($"Deploying eform to {propertyWorkers.Count} workers");
         int? folderId = null;
@@ -491,6 +498,7 @@ public class WorkOrderCaseCompletedHandler(
             var priorityText = "";
 
             var site = await sdkDbContext.Sites.FirstAsync(x => x.Id == propertyWorker.WorkerId);
+            var unit = await sdkDbContext.Units.FirstAsync(x => x.SiteId == site.Id);
             var siteLanguage = await sdkDbContext.Languages.SingleAsync(x => x.Id == site.LanguageId).ConfigureAwait(false);
             Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo(siteLanguage.LanguageCode);
             switch (workorderCase.Priority)
@@ -611,6 +619,33 @@ public class WorkOrderCaseCompletedHandler(
             if (hasImages == false)
             {
                 ((DataElement) mainElement.ElementList[0]).DataItemList.RemoveAt(1);
+            }
+            if (int.Parse(unit.eFormVersion.Replace(".","")) > 3212)
+            {
+                if (hasImages)
+                {
+                    ((DataElement) mainElement.ElementList[0]).DataItemList.RemoveAt(1);
+                    // add a new show picture element for each picture in the picturesOfTasks list
+                    int j = 0;
+                    foreach (var picture in picturesOfTasks)
+                    {
+                        var showPicture = new ShowPicture(j, false, false, "", "", "", 0, false, "");
+                        var storageResult = sdkCore.GetFileFromS3Storage(picture.Key).GetAwaiter().GetResult();
+
+                        await sdkCore.PngUpload(storageResult.ResponseStream, picture.Value, picture.Key);
+                        showPicture.Value = picture.Value;
+                        // {
+                        // Label = "",
+                        // Description = new CDataValue()
+                        // {
+                        //     InderValue = $"<img src=\"https://sdk.microting.com/Files/GetImage/{picture}\" style=\"width: 100%;\" />"
+                        // }
+                        // };
+                        ((DataElement) mainElement.ElementList[0]).DataItemList.Add(showPicture);
+                    }
+
+                    j++;
+                }
             }
             // var caseId = await _sdkCore.CaseCreate(mainElement, "", (int)site.MicrotingUid, folderId);
             int caseId = 0;
