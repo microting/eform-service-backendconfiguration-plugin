@@ -404,6 +404,7 @@ public class WorkOrderCaseCompletedHandler(
                 var uploadedData =
                     await sdkDbContext.UploadedDatas.FirstAsync(x => x.Id == workorderCaseImage.UploadedDataId);
                 picturesOfTasks.Add($"{uploadedData.Id}_700_{uploadedData.Checksum}{uploadedData.Extension}");
+                picturesOfTasksList.Add(new KeyValuePair<string, string>($"{uploadedData.Id}_700_{uploadedData.Checksum}{uploadedData.Extension}", uploadedData.Checksum));
                 var workOrderCaseImage = new WorkorderCaseImage
                 {
                     WorkorderCaseId = workOrderCase.Id,
