@@ -408,7 +408,7 @@ public class WorkOrderCaseCompletedHandler(
                 var workOrderCaseImage = new WorkorderCaseImage
                 {
                     WorkorderCaseId = workOrderCase.Id,
-                    UploadedDataId = (int)uploadedData.Id
+                    UploadedDataId = uploadedData.Id
                 };
                 await workOrderCaseImage.Create(backendConfigurationPnDbContext);
                 hasImages = true;
@@ -635,17 +635,9 @@ public class WorkOrderCaseCompletedHandler(
 
                         await sdkCore.PngUpload(storageResult.ResponseStream, picture.Value, picture.Key);
                         showPicture.Value = picture.Value;
-                        // {
-                        // Label = "",
-                        // Description = new CDataValue()
-                        // {
-                        //     InderValue = $"<img src=\"https://sdk.microting.com/Files/GetImage/{picture}\" style=\"width: 100%;\" />"
-                        // }
-                        // };
                         ((DataElement) mainElement.ElementList[0]).DataItemList.Add(showPicture);
+                        j++;
                     }
-
-                    j++;
                 }
             }
             // var caseId = await _sdkCore.CaseCreate(mainElement, "", (int)site.MicrotingUid, folderId);
