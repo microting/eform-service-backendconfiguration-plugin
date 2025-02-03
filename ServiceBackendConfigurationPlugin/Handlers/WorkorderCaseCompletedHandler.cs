@@ -337,10 +337,7 @@ public class WorkOrderCaseCompletedHandler(
             var assignedSite = await sdkDbContext.Sites.FirstAsync(x => x.Id == propertyWorker.WorkerId);
             var createdBySite =
                 await sdkDbContext.Sites.FirstOrDefaultAsync(x => x.Id == workOrderCase.CreatedBySdkSiteId);
-            if (createdBySite != null)
-            {
-                workOrderCase.CreatedByName = createdBySite.Name;
-            }
+            workOrderCase.CreatedByName ??= createdBySite.Name;
             //var assignedToName = assignedToEntityItem?.Name ?? "";
             var textStatus = "";
 
@@ -571,16 +568,32 @@ public class WorkOrderCaseCompletedHandler(
 
             //var assignedTo = site.Name == assignedSite.Name ? "" : $"<strong>{SharedResource.AssignedTo}:</strong> {assignedSite.Name}<br>";
 
-            var areaName = !string.IsNullOrEmpty(workorderCase.SelectedAreaName)
-                ? $"<strong>{SharedResource.Area}:</strong> {workorderCase.SelectedAreaName}<br>"
-                : "";
+            // var areaName = !string.IsNullOrEmpty(workorderCase.SelectedAreaName)
+            //     ? $"<strong>{SharedResource.Area}:</strong> {workorderCase.SelectedAreaName}<br>"
+            //     : "";
 
-            var outerDescription = $"<strong>{SharedResource.Location}:</strong> {property.Name}<br>" +
-                                   areaName +
-                                   $"<strong>{SharedResource.Description}:</strong> {newDescription}<br>" +
-                                   priorityText +
-                                   assignedTo +
-                                   $"<strong>{SharedResource.Status}:</strong> {textStatus}<br><br>";
+            var outerDescription = $"<strong>{SharedResource.AssignedTo}:</strong> {site.Name}<br>";
+            outerDescription += $"<strong>{SharedResource.Location}:</strong> {property.Name}<br>" +
+                                (!string.IsNullOrEmpty(workorderCase.SelectedAreaName)
+                                    ? $"<strong>{SharedResource.Area}:</strong> {workorderCase.SelectedAreaName}<br>"
+                                    : "") +
+                                $"<strong>{SharedResource.Description}:</strong> {workorderCase.Description}<br>" +
+                                priorityText +
+                                $"<strong>{SharedResource.CreatedBy}:</strong> {workorderCase.CreatedByName}<br>" +
+                                (!string.IsNullOrEmpty(workorderCase.CreatedByText)
+                                    ? $"<strong>{SharedResource.CreatedBy}:</strong> {workorderCase.CreatedByText}<br>"
+                                    : "") +
+                                $"<strong>{SharedResource.CreatedDate}:</strong> {workorderCase.CaseInitiated: dd.MM.yyyy}<br><br>" +
+                                $"<strong>{SharedResource.LastUpdatedBy}:</strong> {workorderCase.CreatedByName}<br>" +
+                                $"<strong>{SharedResource.LastUpdatedDate}:</strong> {workorderCase.UpdatedAt: dd.MM.yyyy}<br><br>" +
+                                $"<strong>{SharedResource.Status}:</strong> {textStatus}<br><br>";
+
+            // var outerDescription = $"<strong>{SharedResource.Location}:</strong> {property.Name}<br>" +
+            //                        areaName +
+            //                        $"<strong>{SharedResource.Description}:</strong> {newDescription}<br>" +
+            //                        priorityText +
+            //                        assignedTo +
+            //                        $"<strong>{SharedResource.Status}:</strong> {textStatus}<br><br>";
             mainElement.ElementList[0].Description.InderValue = outerDescription.Replace("\n", "<br>");
             // TODO uncomment when new app has been released.
             ((DataElement)mainElement.ElementList[0]).DataItemList[0].Description.InderValue = description.Replace("\n", "<br>");
