@@ -549,7 +549,7 @@ public class WorkOrderCaseCompletedHandler(
             // if (status == CaseStatusesEnum.Completed || site.Name == siteName)
             // {
             // }
-            assignedTo = site.Name == assignedSite.Name ? "" : $"<strong>{SharedResource.AssignedTo}:</strong> {assignedSite.Name}<br>";
+            //assignedTo = site.Name == assignedSite.Name ? "" : $"<strong>{SharedResource.AssignedTo}:</strong> {assignedSite.Name}<br>";
             if (site.Name == assignedSite.Name)
             {
                 mainElement.CheckListFolderName = sdkDbContext.Folders.First(x => x.Id == (workorderCase.Priority != "1" ? property.FolderIdForOngoingTasks : property.FolderIdForTasks))
@@ -572,7 +572,7 @@ public class WorkOrderCaseCompletedHandler(
             //     ? $"<strong>{SharedResource.Area}:</strong> {workorderCase.SelectedAreaName}<br>"
             //     : "";
 
-            var outerDescription = $"<strong>{SharedResource.AssignedTo}:</strong> {site.Name}<br>";
+            var outerDescription = $"<strong>{SharedResource.AssignedTo}:</strong> {assignedSite.Name}<br>";
             outerDescription += $"<strong>{SharedResource.Location}:</strong> {property.Name}<br>" +
                                 (!string.IsNullOrEmpty(workorderCase.SelectedAreaName)
                                     ? $"<strong>{SharedResource.Area}:</strong> {workorderCase.SelectedAreaName}<br>"
