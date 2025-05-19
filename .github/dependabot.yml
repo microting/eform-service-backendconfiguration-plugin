@@ -1,6 +1,10 @@
 version: 2
 updates:
 - package-ecosystem: nuget
-  directory: "/"
+  directory: "/ServiceBackendConfigurationPlugin"
+  schedule:
+    interval: daily
+- package-ecosystem: nuget
+  directory: "/ServiceBackendConfigurationPlugin.Integration.Test"
   schedule:
     interval: daily
