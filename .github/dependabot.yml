@@ -4,7 +4,9 @@ updates:
   directory: "/ServiceBackendConfigurationPlugin"
   schedule:
     interval: daily
+  open-pull-requests-limit: 50
 - package-ecosystem: nuget
   directory: "/ServiceBackendConfigurationPlugin.Integration.Test"
   schedule:
     interval: daily
+  open-pull-requests-limit: 50
