@@ -52,6 +52,7 @@ using Microting.ItemsPlanningBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Enums;
 using SendGrid;
 using SendGrid.Helpers.Mail;
+using Sentry;
 using ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 using ServiceBackendConfigurationPlugin.Infrastructure.Models;
 using ServiceBackendConfigurationPlugin.Infrastructure.Models.AreaRules;
@@ -1063,242 +1064,257 @@ public class SearchListJob : IJob
 
                     if (toEmailAddress.Count > 0 && !string.IsNullOrEmpty(sendGridKey.Value))
                     {
-                        var today = new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day, 0, 0,0);
-                        var complianceList = await _backendConfigurationDbContext.Compliances
-                            .Where(x => x.PropertyId == property.Id)
-                            .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
-                            .AsNoTracking()
-                            .OrderBy(x => x.Deadline)
-                            .ToListAsync();
-
-                        var startOfLast24Hours = today.AddDays(-1);
-
-                        var completedComplianceWithinLast24HoursList = await _backendConfigurationDbContext.Compliances
-                            .Where(x => x.PropertyId == property.Id)
-                            .Where(x => x.WorkflowState == Constants.WorkflowStates.Removed)
-                            .Where(x => x.MicrotingSdkCaseId != 0)
-                            .Where(x => x.UpdatedAt > startOfLast24Hours)
-                            .AsNoTracking()
-                            .OrderBy(x => x.Deadline)
-                            .ToListAsync();
-
-                        foreach (var compliance in completedComplianceWithinLast24HoursList)
+                        try
                         {
-                            var sdkCase =
-                                await _sdkDbContext.Cases.FirstAsync(x => x.Id == compliance.MicrotingSdkCaseId);
-                            if (sdkCase.Status == 100)
-                            {
-                                complianceList.Add(compliance);
-                            }
-                        }
-
-                        var entities = new List<ComplianceModel>();
-
-                        Log.LogEvent("Opgavestatus. Found " + complianceList.Count + " compliances for property: " + property.Name);
-                        foreach (var compliance in complianceList)
-                        {
-                            var language = await _sdkDbContext.Languages.FirstAsync(x => x.LanguageCode == "da")
-                                .ConfigureAwait(false);
-                            var planningNameTranslation = await _itemsPlanningPnDbContext.PlanningNameTranslation
-                                .SingleOrDefaultAsync(x =>
-                                    x.PlanningId == compliance.PlanningId && x.LanguageId == language.Id)
-                                .ConfigureAwait(false);
-
-                            if (planningNameTranslation == null)
-                            {
-                                continue;
-                            }
-
-                            var areaTranslation = await _backendConfigurationDbContext.AreaTranslations
-                                .SingleOrDefaultAsync(x =>
-                                    x.AreaId == compliance.AreaId && x.LanguageId == language.Id)
-                                .ConfigureAwait(false);
-
-                            if (areaTranslation == null)
-                            {
-                                continue;
-                            }
-
-                            var planningSites = await _itemsPlanningPnDbContext.PlanningSites
-                                .Where(x => x.PlanningId == compliance.PlanningId)
+                            var today = new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day, 0, 0, 0);
+                            var complianceList = await _backendConfigurationDbContext.Compliances
+                                .Where(x => x.PropertyId == property.Id)
                                 .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
-                                .Select(x => x.SiteId)
-                                .Distinct()
-                                .ToListAsync().ConfigureAwait(false);
+                                .AsNoTracking()
+                                .OrderBy(x => x.Deadline)
+                                .ToListAsync();
 
-                            var sdkFolderId = await _itemsPlanningPnDbContext.Plannings
-                                .Where(x => x.Id == compliance.PlanningId)
-                                .Select(x => x.SdkFolderId)
-                                .FirstOrDefaultAsync()
-                                .ConfigureAwait(false);
+                            var startOfLast24Hours = today.AddDays(-1);
 
-                            if (sdkFolderId is 0 or null)
+                            var completedComplianceWithinLast24HoursList = await _backendConfigurationDbContext
+                                .Compliances
+                                .Where(x => x.PropertyId == property.Id)
+                                .Where(x => x.WorkflowState == Constants.WorkflowStates.Removed)
+                                .Where(x => x.MicrotingSdkCaseId != 0)
+                                .Where(x => x.UpdatedAt > startOfLast24Hours)
+                                .AsNoTracking()
+                                .OrderBy(x => x.Deadline)
+                                .ToListAsync();
+
+                            foreach (var compliance in completedComplianceWithinLast24HoursList)
                             {
-                                // send email to RM about missing folder
-                                 MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
-                                     [new EmailAddress("rm@microting.dk")],
-                                    $"Missing folder for compliance: {customerNo} {property.Name}",
-                                    $"Compliance with id: {compliance.Id} is missing a folder",
-                                    $"Compliance with id: {compliance.Id} is missing a folder");
+                                var sdkCase =
+                                    await _sdkDbContext.Cases.FirstAsync(x => x.Id == compliance.MicrotingSdkCaseId);
+                                if (sdkCase.Status == 100)
+                                {
+                                    complianceList.Add(compliance);
+                                }
                             }
 
-                            var sdkFolderName = await _sdkDbContext.FolderTranslations
-                                .Where(x => x.FolderId == sdkFolderId)
-                                .Where(x => x.LanguageId == danishLanguage.Id)
-                                .Select(x => x.Name)
-                                .FirstOrDefaultAsync() ?? await _itemsPlanningPnDbContext.Plannings
-                                .Where(x => x.Id == compliance.PlanningId)
-                                .Select(x => x.SdkFolderName)
-                                .FirstAsync()
-                                .ConfigureAwait(false);
+                            var entities = new List<ComplianceModel>();
 
-                            var sitesList = await _sdkDbContext.Sites.Where(x => planningSites.Contains(x.Id))
-                                .ToListAsync()
-                                .ConfigureAwait(false);
-
-                            var responsible = sitesList
-                                .Select(site => new KeyValuePair<int, string>(site.Id, site.Name))
-                                .ToList();
-
-                            var complianceModel = new ComplianceModel
+                            Log.LogEvent("Opgavestatus. Found " + complianceList.Count + " compliances for property: " +
+                                         property.Name);
+                            foreach (var compliance in complianceList)
                             {
-                                CaseId = compliance.MicrotingSdkCaseId,
-                                CreatedAt = compliance.CreatedAt,
-                                Deadline = compliance.Deadline.AddDays(-1),
-                                ComplianceTypeId = null,
-                                ControlArea = areaTranslation.Name,
-                                EformId = compliance.MicrotingSdkeFormId,
-                                Id = compliance.Id,
-                                ItemName = planningNameTranslation.Name,
-                                PlanningId = compliance.PlanningId,
-                                Responsible = responsible,
-                                FolderName = sdkFolderName,
-                                WorkflowState = compliance.WorkflowState
-                            };
+                                var language = await _sdkDbContext.Languages.FirstAsync(x => x.LanguageCode == "da")
+                                    .ConfigureAwait(false);
+                                var planningNameTranslation = await _itemsPlanningPnDbContext.PlanningNameTranslation
+                                    .SingleOrDefaultAsync(x =>
+                                        x.PlanningId == compliance.PlanningId && x.LanguageId == language.Id)
+                                    .ConfigureAwait(false);
 
-                            entities.Add(complianceModel);
-                        }
+                                if (planningNameTranslation == null)
+                                {
+                                    continue;
+                                }
 
-                        var expiredTodayModels = new List<ComplianceModel>();
-                        var expiredComplianceModels = new List<ComplianceModel>();
-                        var expiredLast24HoursModels = new List<ComplianceModel>();
-                        var completedLast24HoursModels = new List<ComplianceModel>();
-                        var expiringIn1Month = new List<ComplianceModel>();
-                        // var expiringIn3Months = new List<ComplianceModel>();
-                        // var expiringIn6Months = new List<ComplianceModel>();
-                        // var expiringIn12Months = new List<ComplianceModel>();
-                        var expiringOver1Month = new List<ComplianceModel>();
-                        var hasCompliances = false;
+                                var areaTranslation = await _backendConfigurationDbContext.AreaTranslations
+                                    .SingleOrDefaultAsync(x =>
+                                        x.AreaId == compliance.AreaId && x.LanguageId == language.Id)
+                                    .ConfigureAwait(false);
 
-                        var removed = entities.Where(x => x.WorkflowState == Constants.WorkflowStates.Removed);
-                        foreach (var complianceModel in removed)
-                        {
-                            var sdkCase =
-                                await _sdkDbContext.Cases.FirstAsync(x => x.Id == complianceModel.CaseId);
-                            complianceModel.Deadline = sdkCase.DoneAtUserModifiable!.Value;
-                            completedLast24HoursModels.Add(complianceModel);
-                            hasCompliances = true;
-                        }
+                                if (areaTranslation == null)
+                                {
+                                    continue;
+                                }
 
-                        var notRemoved = entities.Where(x => x.WorkflowState != Constants.WorkflowStates.Removed);
+                                var planningSites = await _itemsPlanningPnDbContext.PlanningSites
+                                    .Where(x => x.PlanningId == compliance.PlanningId)
+                                    .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+                                    .Select(x => x.SiteId)
+                                    .Distinct()
+                                    .ToListAsync().ConfigureAwait(false);
 
-                        var tomorrow = new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day, 0, 0,0).AddDays(1);
-                        foreach (var complianceModel in notRemoved)
-                        {
-                            if (complianceModel.Deadline < DateTime.Now.AddDays(-1) &&
-                                complianceModel.Deadline > DateTime.Now.AddDays(-2))
+                                var sdkFolderId = await _itemsPlanningPnDbContext.Plannings
+                                    .Where(x => x.Id == compliance.PlanningId)
+                                    .Select(x => x.SdkFolderId)
+                                    .FirstOrDefaultAsync()
+                                    .ConfigureAwait(false);
+
+                                if (sdkFolderId is 0 or null)
+                                {
+                                    // send email to RM about missing folder
+                                    MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
+                                        [new EmailAddress("rm@microting.dk")],
+                                        $"Missing folder for compliance: {customerNo} {property.Name}",
+                                        $"Compliance with id: {compliance.Id} is missing a folder",
+                                        $"Compliance with id: {compliance.Id} is missing a folder");
+                                }
+
+                                var sdkFolderName = await _sdkDbContext.FolderTranslations
+                                    .Where(x => x.FolderId == sdkFolderId)
+                                    .Where(x => x.LanguageId == danishLanguage.Id)
+                                    .Select(x => x.Name)
+                                    .FirstOrDefaultAsync() ?? await _itemsPlanningPnDbContext.Plannings
+                                    .Where(x => x.Id == compliance.PlanningId)
+                                    .Select(x => x.SdkFolderName)
+                                    .FirstAsync()
+                                    .ConfigureAwait(false);
+
+                                var sitesList = await _sdkDbContext.Sites.Where(x => planningSites.Contains(x.Id))
+                                    .ToListAsync()
+                                    .ConfigureAwait(false);
+
+                                var responsible = sitesList
+                                    .Select(site => new KeyValuePair<int, string>(site.Id, site.Name))
+                                    .ToList();
+
+                                var complianceModel = new ComplianceModel
+                                {
+                                    CaseId = compliance.MicrotingSdkCaseId,
+                                    CreatedAt = compliance.CreatedAt,
+                                    Deadline = compliance.Deadline.AddDays(-1),
+                                    ComplianceTypeId = null,
+                                    ControlArea = areaTranslation.Name,
+                                    EformId = compliance.MicrotingSdkeFormId,
+                                    Id = compliance.Id,
+                                    ItemName = planningNameTranslation.Name,
+                                    PlanningId = compliance.PlanningId,
+                                    Responsible = responsible,
+                                    FolderName = sdkFolderName,
+                                    WorkflowState = compliance.WorkflowState
+                                };
+
+                                entities.Add(complianceModel);
+                            }
+
+                            var expiredTodayModels = new List<ComplianceModel>();
+                            var expiredComplianceModels = new List<ComplianceModel>();
+                            var expiredLast24HoursModels = new List<ComplianceModel>();
+                            var completedLast24HoursModels = new List<ComplianceModel>();
+                            var expiringIn1Month = new List<ComplianceModel>();
+                            // var expiringIn3Months = new List<ComplianceModel>();
+                            // var expiringIn6Months = new List<ComplianceModel>();
+                            // var expiringIn12Months = new List<ComplianceModel>();
+                            var expiringOver1Month = new List<ComplianceModel>();
+                            var hasCompliances = false;
+
+                            var removed = entities.Where(x => x.WorkflowState == Constants.WorkflowStates.Removed);
+                            foreach (var complianceModel in removed)
                             {
-                                expiredLast24HoursModels.Add(complianceModel);
-                                expiredComplianceModels.Add(complianceModel);
+                                var sdkCase =
+                                    await _sdkDbContext.Cases.FirstAsync(x => x.Id == complianceModel.CaseId);
+                                complianceModel.Deadline = sdkCase.DoneAtUserModifiable!.Value;
+                                completedLast24HoursModels.Add(complianceModel);
                                 hasCompliances = true;
                             }
-                            else if (complianceModel.Deadline >= today &&
-                                     complianceModel.Deadline < tomorrow)
+
+                            var notRemoved = entities.Where(x => x.WorkflowState != Constants.WorkflowStates.Removed);
+
+                            var tomorrow =
+                                new DateTime(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day, 0, 0, 0)
+                                    .AddDays(1);
+                            foreach (var complianceModel in notRemoved)
                             {
-                                expiredTodayModels.Add(complianceModel);
-                                hasCompliances = true;
+                                if (complianceModel.Deadline < DateTime.Now.AddDays(-1) &&
+                                    complianceModel.Deadline > DateTime.Now.AddDays(-2))
+                                {
+                                    expiredLast24HoursModels.Add(complianceModel);
+                                    expiredComplianceModels.Add(complianceModel);
+                                    hasCompliances = true;
+                                }
+                                else if (complianceModel.Deadline >= today &&
+                                         complianceModel.Deadline < tomorrow)
+                                {
+                                    expiredTodayModels.Add(complianceModel);
+                                    hasCompliances = true;
+                                }
+                                else if (complianceModel.Deadline < DateTime.Now)
+                                {
+                                    expiredComplianceModels.Add(complianceModel);
+                                    hasCompliances = true;
+                                }
+                                else if (complianceModel.Deadline < DateTime.Now.AddMonths(1))
+                                {
+                                    expiringIn1Month.Add(complianceModel);
+                                    hasCompliances = true;
+                                }
+                                else
+                                {
+                                    expiringOver1Month.Add(complianceModel);
+                                    hasCompliances = true;
+                                }
                             }
-                            else if (complianceModel.Deadline < DateTime.Now)
+
+                            var sendGridClient = new SendGridClient(sendGridKey.Value);
+                            var assembly = Assembly.GetExecutingAssembly();
+                            var assemblyName = assembly.GetName().Name;
+
+                            var stream =
+                                assembly.GetManifestResourceStream(
+                                    $"{assemblyName}.Resources.new_compliance_report.html");
+                            string html;
+                            if (stream == null)
                             {
-                                expiredComplianceModels.Add(complianceModel);
-                                hasCompliances = true;
+                                throw new InvalidOperationException("Resource not found");
                             }
-                            else if (complianceModel.Deadline < DateTime.Now.AddMonths(1))
+
+                            using (var reader = new StreamReader(stream, Encoding.UTF8))
                             {
-                                expiringIn1Month.Add(complianceModel);
-                                hasCompliances = true;
+                                html = await reader.ReadToEndAsync();
                             }
-                            else
+
+
+                            var newHtml = html;
+                            newHtml = newHtml.Replace("{{propertyName}}", property.Name);
+                            TimeZoneInfo copenhagenTimeZone =
+                                TimeZoneInfo.FindSystemTimeZoneById("Central European Standard Time");
+                            DateTime utcTime = DateTime.UtcNow;
+                            DateTime copenhagenTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, copenhagenTimeZone);
+                            newHtml = newHtml.Replace("{{dato}}", copenhagenTime.ToString("dd-MM-yyyy HH:mm:ss"));
+                            newHtml = newHtml.Replace("{{emailaddresses}}", property.MainMailAddress);
+
+                            // if (DateTime.Now.DayOfWeek == DayOfWeek.Thursday && hasCompliances)
+                            // {
+                            newHtml = newHtml.Replace("{{expiredTodayProducts}}",
+                                await GenerateComplianceList(expiredTodayModels, property.Name));
+                            newHtml = newHtml.Replace("{{expiredProducts}}",
+                                await GenerateComplianceList(expiredComplianceModels, property.Name));
+                            newHtml = newHtml.Replace("{{expiringIn1Month}}",
+                                await GenerateComplianceList(expiringIn1Month, property.Name));
+                            newHtml = newHtml.Replace("{{expiredLast24Hours}}",
+                                await GenerateComplianceList(expiredLast24HoursModels, property.Name));
+                            newHtml = newHtml.Replace("{{doneLast24Hours}}",
+                                await GenerateComplianceList(completedLast24HoursModels, property.Name));
+                            // newHtml = newHtml.Replace("{{expiringIn3Months}}",
+                            //     await GenerateComplianceList(expiringIn3Months, property.Name));
+                            // newHtml = newHtml.Replace("{{expiringIn6Months}}",
+                            //     await GenerateComplianceList(expiringIn6Months, property.Name));
+                            // newHtml = newHtml.Replace("{{expiringIn12Months}}",
+                            //     await GenerateComplianceList(expiringIn12Months, property.Name));
+                            newHtml = newHtml.Replace("{{expiringOver1Month}}",
+                                await GenerateComplianceList(expiringOver1Month, property.Name));
+
+                            List<Attachment> attachments = new List<Attachment>();
+
+                            newHtml = newHtml.Replace("{{customerNo}}", customerNo);
+                            newHtml = newHtml.Replace("{{numberOfExpiredTasks}}",
+                                expiredComplianceModels.Count.ToString());
+
+                            var msg = MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
+                                toEmailAddress,
+                                $"Opgavestatus: {customerNo} {property.Name}", null, newHtml);
+                            // msg.AddAttachments(attachments);
+
+                            var responseMessage = await sendGridClient.SendEmailAsync(msg);
+                            if ((int)responseMessage.StatusCode < 200 ||
+                                (int)responseMessage.StatusCode >= 300)
                             {
-                                expiringOver1Month.Add(complianceModel);
-                                hasCompliances = true;
+                                throw new Exception($"Status: {responseMessage.StatusCode}");
                             }
+                            //}
                         }
-
-                        var sendGridClient = new SendGridClient(sendGridKey.Value);
-                        var assembly = Assembly.GetExecutingAssembly();
-                        var assemblyName = assembly.GetName().Name;
-
-                        var stream =
-                            assembly.GetManifestResourceStream($"{assemblyName}.Resources.new_compliance_report.html");
-                        string html;
-                        if (stream == null)
+                        catch (Exception e)
                         {
-                            throw new InvalidOperationException("Resource not found");
+                            Console.WriteLine(e);
+                            SentrySdk.CaptureException(e);
                         }
-
-                        using (var reader = new StreamReader(stream, Encoding.UTF8))
-                        {
-                            html = await reader.ReadToEndAsync();
-                        }
-
-
-                        var newHtml = html;
-                        newHtml = newHtml.Replace("{{propertyName}}", property.Name);
-                        TimeZoneInfo copenhagenTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central European Standard Time");
-                        DateTime utcTime = DateTime.UtcNow;
-                        DateTime copenhagenTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, copenhagenTimeZone);
-                        newHtml = newHtml.Replace("{{dato}}", copenhagenTime.ToString("dd-MM-yyyy HH:mm:ss"));
-                        newHtml = newHtml.Replace("{{emailaddresses}}", property.MainMailAddress);
-
-                        // if (DateTime.Now.DayOfWeek == DayOfWeek.Thursday && hasCompliances)
-                        // {
-                        newHtml = newHtml.Replace("{{expiredTodayProducts}}",
-                            await GenerateComplianceList(expiredTodayModels, property.Name));
-                        newHtml = newHtml.Replace("{{expiredProducts}}",
-                            await GenerateComplianceList(expiredComplianceModels, property.Name));
-                        newHtml = newHtml.Replace("{{expiringIn1Month}}",
-                            await GenerateComplianceList(expiringIn1Month, property.Name));
-                        newHtml = newHtml.Replace("{{expiredLast24Hours}}",
-                            await GenerateComplianceList(expiredLast24HoursModels, property.Name));
-                        newHtml = newHtml.Replace("{{doneLast24Hours}}",
-                            await GenerateComplianceList(completedLast24HoursModels, property.Name));
-                        // newHtml = newHtml.Replace("{{expiringIn3Months}}",
-                        //     await GenerateComplianceList(expiringIn3Months, property.Name));
-                        // newHtml = newHtml.Replace("{{expiringIn6Months}}",
-                        //     await GenerateComplianceList(expiringIn6Months, property.Name));
-                        // newHtml = newHtml.Replace("{{expiringIn12Months}}",
-                        //     await GenerateComplianceList(expiringIn12Months, property.Name));
-                        newHtml = newHtml.Replace("{{expiringOver1Month}}",
-                            await GenerateComplianceList(expiringOver1Month, property.Name));
-
-                        List<Attachment> attachments = new List<Attachment>();
-
-                        newHtml = newHtml.Replace("{{customerNo}}", customerNo);
-                        newHtml = newHtml.Replace("{{numberOfExpiredTasks}}", expiredComplianceModels.Count.ToString());
-
-                        var msg = MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
-                            toEmailAddress,
-                            $"Opgavestatus: {customerNo} {property.Name}", null, newHtml);
-                        // msg.AddAttachments(attachments);
-
-                        var responseMessage = await sendGridClient.SendEmailAsync(msg);
-                        if ((int) responseMessage.StatusCode < 200 ||
-                            (int) responseMessage.StatusCode >= 300)
-                        {
-                            throw new Exception($"Status: {responseMessage.StatusCode}");
-                        }
-                        //}
                     }
                 }
             }
