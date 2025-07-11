@@ -138,8 +138,8 @@ public class SearchListJob : IJob
                             {
                                 if (chemical.WorkflowState != Constants.WorkflowStates.Removed)
                                 {
-                                    Console.WriteLine(
-                                        $"Chemical already exist, so updating : {chemical.Name} no {i} of {count}");
+                                    // Console.WriteLine(
+                                        // $"Chemical already exist, so updating : {chemical.Name} no {i} of {count}");
                                     c.Use = chemical.Use;
                                     c.Verified = chemical.Verified;
                                     c.AuthorisationDate = chemical.AuthorisationDate;
@@ -921,122 +921,6 @@ public class SearchListJob : IJob
                         throw new Exception($"Status: {responseMessage.StatusCode}");
                     }
                 }
-
-                //         var assembly = Assembly.GetExecutingAssembly();
-                //         var assemblyName = assembly.GetName().Name;
-                //
-                //         var stream =
-                //             assembly.GetManifestResourceStream(
-                //                 $"{assemblyName}.Resources.DokumentKontrol_rapport_1.0_Libre.html");
-                //         string html;
-                //         if (stream == null)
-                //         {
-                //             throw new InvalidOperationException("Resource not found");
-                //         }
-                //
-                //         using (var reader = new StreamReader(stream, Encoding.UTF8))
-                //         {
-                //             html = await reader.ReadToEndAsync();
-                //         }
-                //
-                //         var newHtml = html;
-                //         newHtml = newHtml.Replace("{{propertyName}}", property.Name);
-                //         newHtml = newHtml.Replace("{{dato}}", DateTime.Now.ToString("dd-MM-yyyy"));
-                //         newHtml = newHtml.Replace("{{emailaddresses}}", property.MainMailAddress);
-                //
-                //         var documentProperties = await caseTemplateDbContext
-                //             .DocumentProperties.Where(x =>
-                //                 x.WorkflowState != Constants.WorkflowStates.Removed
-                //                 && x.PropertyId == property.Id)
-                //             .OrderBy(x => x.ExpireDate)
-                //             .ToListAsync();
-                //         var expiredProducts = new List<DocumentProperty>();
-                //         var expiringIn1Month = new List<DocumentProperty>();
-                //         var expiringIn3Months = new List<DocumentProperty>();
-                //         var expiringIn6Months = new List<DocumentProperty>();
-                //         var expiringIn12Months = new List<DocumentProperty>();
-                //         var otherProducts = new List<DocumentProperty>();
-                //         var hasDocuments = false;
-                //
-                //         foreach (var documentProperty in documentProperties)
-                //         {
-                //             var document = await caseTemplateDbContext.Documents
-                //                 .Where(x => x.Status == true)
-                //                 .FirstOrDefaultAsync(x => x.Id == documentProperty.DocumentId);
-                //
-                //             if (document != null)
-                //             {
-                //                 if (document.EndAt < DateTime.Now)
-                //                 {
-                //                     expiredProducts.Add(documentProperty);
-                //                     hasDocuments = true;
-                //                 }
-                //                 else if (document.EndAt < DateTime.Now.AddMonths(1))
-                //                 {
-                //                     expiringIn1Month.Add(documentProperty);
-                //                     hasDocuments = true;
-                //                 }
-                //                 else if (document.EndAt < DateTime.Now.AddMonths(3))
-                //                 {
-                //                     expiringIn3Months.Add(documentProperty);
-                //                     hasDocuments = true;
-                //                 }
-                //                 else if (document.EndAt < DateTime.Now.AddMonths(6))
-                //                 {
-                //                     expiringIn6Months.Add(documentProperty);
-                //                     hasDocuments = true;
-                //                 }
-                //                 else if (document.EndAt < DateTime.Now.AddMonths(12))
-                //                 {
-                //                     expiringIn12Months.Add(documentProperty);
-                //                     hasDocuments = true;
-                //                 }
-                //                 else
-                //                 {
-                //                     otherProducts.Add(documentProperty);
-                //                     hasDocuments = true;
-                //                 }
-                //             }
-                //         }
-                //
-                //         if ((expiringIn1Month.Count > 0 && DateTime.Now.DayOfWeek == DayOfWeek.Thursday) ||
-                //             expiredProducts.Count > 0 ||
-                //             (DateTime.Now.DayOfWeek == DayOfWeek.Thursday && DateTime.Now.Day < 8 && hasDocuments))
-                //         {
-                //             newHtml = newHtml.Replace("{{expiredProducts}}",
-                //                 await GenerateDocumentList(expiredProducts, caseTemplateDbContext,
-                //                     _backendConfigurationDbContext));
-                //             newHtml = newHtml.Replace("{{expiringIn1Month}}",
-                //                 await GenerateDocumentList(expiringIn1Month, caseTemplateDbContext,
-                //                     _backendConfigurationDbContext));
-                //             newHtml = newHtml.Replace("{{expiringIn3Months}}",
-                //                 await GenerateDocumentList(expiringIn3Months, caseTemplateDbContext,
-                //                     _backendConfigurationDbContext));
-                //             newHtml = newHtml.Replace("{{expiringIn6Months}}",
-                //                 await GenerateDocumentList(expiringIn6Months, caseTemplateDbContext,
-                //                     _backendConfigurationDbContext));
-                //             newHtml = newHtml.Replace("{{expiringIn12Months}}",
-                //                 await GenerateDocumentList(expiringIn12Months, caseTemplateDbContext,
-                //                     _backendConfigurationDbContext));
-                //             newHtml = newHtml.Replace("{{otherProducts}}",
-                //                 await GenerateDocumentList(otherProducts, caseTemplateDbContext,
-                //                     _backendConfigurationDbContext));
-                //
-                //             var msg = MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
-                //                 toEmailAddress,
-                //                 $"Dokumenter: {customerNo} {property.Name}", null, newHtml);
-                //
-                //             var responseMessage = await sendGridClient.SendEmailAsync(msg);
-                //             if ((int) responseMessage.StatusCode < 200 ||
-                //                 (int) responseMessage.StatusCode >= 300)
-                //             {
-                //                 throw new Exception($"Status: {responseMessage.StatusCode}");
-                //             }
-                //         }
-                //     }
-                //
-                // }
-
             }
                 break;
             case 8:
