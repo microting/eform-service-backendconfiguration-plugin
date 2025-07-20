@@ -883,6 +883,7 @@ public class SearchListJob : IJob
                                 .FirstAsync(x => x.PlanningId == brokenPlanning.Id);
                             stringBuilder.Append(
                                 $"<p>Planning with id: {brokenPlanning.Id} and name: {planningTranslation.Name} has ShowExpireDate set to false</p>");
+                            await brokenPlanning.Delete(_itemsPlanningPnDbContext).ConfigureAwait(false);
                         }
                         catch
                         {
