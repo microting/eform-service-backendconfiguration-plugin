@@ -24,7 +24,7 @@
     <PackageReference Include="Microting.WindowsService.BasePn" Version="2.0.0" />
     <PackageReference Include="QuestPDF" Version="2025.7.0" />
     <PackageReference Include="SendGrid" Version="9.29.3" />
-    <PackageReference Include="Sentry" Version="5.12.0" />
+    <PackageReference Include="Sentry" Version="5.13.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.0" />
     <PackageReference Include="System.ComponentModel.Composition" Version="9.0.7" />
     <PackageReference Include="Microting.eFormApi.BasePn" Version="9.0.42" />
