@@ -20,7 +20,7 @@
     <PackageReference Include="Microting.EformAngularFrontendBase" Version="9.0.46" />
     <PackageReference Include="Microting.EformBackendConfigurationBase" Version="9.0.1" />
     <PackageReference Include="Microting.eFormCaseTemplateBase" Version="8.0.109" />
-    <PackageReference Include="Microting.ItemsPlanningBase" Version="8.0.109" />
+    <PackageReference Include="Microting.ItemsPlanningBase" Version="8.0.110" />
     <PackageReference Include="Microting.WindowsService.BasePn" Version="2.0.0" />
     <PackageReference Include="QuestPDF" Version="2025.7.2" />
     <PackageReference Include="SendGrid" Version="9.29.3" />
