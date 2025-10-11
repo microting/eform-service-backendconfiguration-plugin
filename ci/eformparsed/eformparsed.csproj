@@ -13,7 +13,7 @@
     <PackageReference Include="Microting.ItemsPlanningBase" Version="8.0.111" />
     <PackageReference Include="Microting.Rebus" Version="9.0.5" />
     <PackageReference Include="Microting.Rebus.Castle.Windsor" Version="9.0.5" />
-    <PackageReference Include="Microting.Rebus.RabbitMq" Version="9.0.9" />
+    <PackageReference Include="Microting.Rebus.RabbitMq" Version="9.0.10" />
   </ItemGroup>
 
   <ItemGroup>
