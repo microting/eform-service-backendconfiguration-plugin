@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microting.eForm" Version="9.0.61" />
+    <PackageReference Include="Microting.eForm" Version="9.0.64" />
     <PackageReference Include="Microting.EformBackendConfigurationBase" Version="9.0.1" />
     <PackageReference Include="Microting.ItemsPlanningBase" Version="8.0.113" />
     <PackageReference Include="Microting.Rebus" Version="9.0.5" />
