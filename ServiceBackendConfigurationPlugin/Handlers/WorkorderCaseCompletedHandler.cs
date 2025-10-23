@@ -17,14 +17,14 @@ using Microting.eForm.Infrastructure.Models;
 using Microting.eFormApi.BasePn.Infrastructure.Consts;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Enum;
-using QuestPDF.Fluent;
+// using QuestPDF.Fluent;
 using Rebus.Handlers;
 using ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 using ServiceBackendConfigurationPlugin.Messages;
 using ServiceBackendConfigurationPlugin.Resources;
 using File = System.IO.File;
 using KeyValuePair = Microting.eForm.Dto.KeyValuePair;
-using Unit = QuestPDF.Infrastructure.Unit;
+// using Unit = QuestPDF.Infrastructure.Unit;
 
 namespace ServiceBackendConfigurationPlugin.Handlers;
 
@@ -229,7 +229,7 @@ public class WorkOrderCaseCompletedHandler(
                 hasImages = true;
             }
 
-            var hash = await GeneratePdf(picturesOfTasks, assignedSite.Id!);
+            // var hash = await GeneratePdf(picturesOfTasks, assignedSite.Id!);
 
             var priorityText = "";
 
@@ -272,7 +272,7 @@ public class WorkOrderCaseCompletedHandler(
             // deploy eform to ongoing status
             await DeployWorkOrderEform(propertyWorkers, eformIdForOngoingTasks,
                 property, label, CaseStatusesEnum.Ongoing, newWorkOrderCase,
-                commentFieldValue.Value, int.Parse(deviceUsersGroup.MicrotingUid), hash,
+                commentFieldValue.Value, int.Parse(deviceUsersGroup.MicrotingUid),
                 assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages, picturesOfTasksList);
         }
         else if (eformIdForOngoingTasks == dbCase.CheckListId && workOrderCase != null)
@@ -411,7 +411,7 @@ public class WorkOrderCaseCompletedHandler(
                 hasImages = true;
             }
 
-            var hash = await GeneratePdf(picturesOfTasks, updatedBySite.Id);
+            // var hash = await GeneratePdf(picturesOfTasks, updatedBySite.Id);
 
             var description = $"<strong>{SharedResource.AssignedTo}:</strong> {assignedSite.Name}<br>";
 
@@ -460,8 +460,7 @@ public class WorkOrderCaseCompletedHandler(
             await RetractEform(workOrderCase);
             // deploy eform to ongoing status
             await DeployWorkOrderEform(propertyWorkers, eformIdForOngoingTasks, property, description,
-                workOrderCase.CaseStatusesEnum, workOrderCase, commentFieldValue.Value, int.Parse(deviceUsersGroupUid),
-                hash, assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages, picturesOfTasksList);
+                workOrderCase.CaseStatusesEnum, workOrderCase, commentFieldValue.Value, int.Parse(deviceUsersGroupUid), assignedSite, pushMessageBody, pushMessageTitle, updatedByName, hasImages, picturesOfTasksList);
         }
     }
 
@@ -474,7 +473,7 @@ public class WorkOrderCaseCompletedHandler(
         WorkorderCase workorderCase,
         string newDescription,
         int? deviceUsersGroupId,
-        string pdfHash,
+        // string pdfHash,
         Site assignedSite,
         string pushMessageBody,
         string pushMessageTitle,
@@ -599,7 +598,7 @@ public class WorkOrderCaseCompletedHandler(
             ((DataElement)mainElement.ElementList[0]).DataItemList[0].Description.InderValue = description.Replace("\n", "<br>");
             ((DataElement)mainElement.ElementList[0]).DataItemList[0].Label = " ";
             ((DataElement)mainElement.ElementList[0]).DataItemList[0].Color = Constants.FieldColors.Yellow;
-            ((ShowPdf) ((DataElement) mainElement.ElementList[0]).DataItemList[1]).Value = pdfHash;
+            // ((ShowPdf) ((DataElement) mainElement.ElementList[0]).DataItemList[1]).Value = pdfHash;
 
             List<KeyValuePair> kvpList = ((SingleSelect) ((DataElement) mainElement.ElementList[0]).DataItemList[4]).KeyValuePairList;
             var newKvpList = new List<KeyValuePair>();
@@ -630,30 +629,30 @@ public class WorkOrderCaseCompletedHandler(
             }
 
             mainElement.StartDate = DateTime.Now.ToUniversalTime();
-            if (hasImages == false)
+            // if (hasImages == false)
+            // {
+            ((DataElement) mainElement.ElementList[0]).DataItemList.RemoveAt(1);
+            // }
+            // unit.eFormVersion ??= "1.0.0";
+            // if (int.Parse(unit.eFormVersion.Replace(".","")) > 3212)
+            // {
+            if (hasImages)
             {
-                ((DataElement) mainElement.ElementList[0]).DataItemList.RemoveAt(1);
-            }
-            unit.eFormVersion ??= "1.0.0";
-            if (int.Parse(unit.eFormVersion.Replace(".","")) > 3212)
-            {
-                if (hasImages)
+                // ((DataElement) mainElement.ElementList[0]).DataItemList.RemoveAt(1);
+                // add a new show picture element for each picture in the picturesOfTasks list
+                int j = 0;
+                foreach (var picture in picturesOfTasks)
                 {
-                    ((DataElement) mainElement.ElementList[0]).DataItemList.RemoveAt(1);
-                    // add a new show picture element for each picture in the picturesOfTasks list
-                    int j = 0;
-                    foreach (var picture in picturesOfTasks)
-                    {
-                        var showPicture = new ShowPicture(j, false, false, "", "", "", 0, false, "");
-                        var storageResult = sdkCore.GetFileFromS3Storage(picture.Key).GetAwaiter().GetResult();
+                    var showPicture = new ShowPicture(j, false, false, "", "", "", 0, false, "");
+                    var storageResult = sdkCore.GetFileFromS3Storage(picture.Key).GetAwaiter().GetResult();
 
-                        await sdkCore.PngUpload(storageResult.ResponseStream, picture.Value, picture.Key);
-                        showPicture.Value = picture.Value;
-                        ((DataElement) mainElement.ElementList[0]).DataItemList.Add(showPicture);
-                        j++;
-                    }
+                    await sdkCore.PngUpload(storageResult.ResponseStream, picture.Value, picture.Key);
+                    showPicture.Value = picture.Value;
+                    ((DataElement) mainElement.ElementList[0]).DataItemList.Add(showPicture);
+                    j++;
                 }
             }
+            // }
             // var caseId = await _sdkCore.CaseCreate(mainElement, "", (int)site.MicrotingUid, folderId);
             int caseId = 0;
             if (workorderCase.CaseStatusesEnum != CaseStatusesEnum.Completed)
@@ -722,60 +721,60 @@ public class WorkOrderCaseCompletedHandler(
         }
     }
 
-    private async Task<string> GeneratePdf(List<string> picturesOfTasks, int sitId)
-    {
-        picturesOfTasks.Reverse();
-        string downloadPath = Path.Combine(Path.GetTempPath(), "reports", "results");
-        Directory.CreateDirectory(downloadPath);
-        string timeStamp = DateTime.UtcNow.ToString("yyyyMMdd") + "_" + DateTime.UtcNow.ToString("hhmmss");
-        string tempPdfFileName = $"{timeStamp}{sitId}_temp.pdf";
-        string tempPdfFilePath = Path.Combine(downloadPath, tempPdfFileName);
-        var document = Document.Create(container =>
-        {
-            container.Page(page =>
-            {
-                page.Content()
-                    .Padding(1, Unit.Centimetre)
-                    .Column(x =>
-                    {
-                        // loop over all images and add them to the document
-                        var i = 0;
-                        foreach (var imageName in picturesOfTasks)
-                        {
-                            var storageResult = sdkCore.GetFileFromS3Storage(imageName).GetAwaiter().GetResult();
-                            x.Item().Image(storageResult.ResponseStream)
-                                .FitArea();
-                            if (i < picturesOfTasks.Count - 1)
-                            {
-                                x.Item().PageBreak();
-                            }
-                            i++;
-                        }
-                    });
-            });
-        }).GeneratePdf();
-
-        await using var fileStream = new FileStream(tempPdfFilePath, FileMode.Create, FileAccess.Write);
-        // save the byte[] to a file.
-        await fileStream.WriteAsync(document, 0, document.Length);
-        await fileStream.FlushAsync();
-
-        // Upload PDF
-        // string pdfFileName = null;
-        string hash = await sdkCore.PdfUpload(tempPdfFilePath);
-        if (hash != null)
-        {
-            //rename local file
-            FileInfo fileInfo = new FileInfo(tempPdfFilePath);
-            fileInfo.CopyTo(downloadPath + "/" + hash + ".pdf", true);
-            fileInfo.Delete();
-            await sdkCore.PutFileToStorageSystem(Path.Combine(downloadPath, $"{hash}.pdf"), $"{hash}.pdf");
-
-            // delete local file
-            File.Delete(downloadPath + "/" + hash + ".pdf");
-            // TODO Remove from file storage?
-        }
-
-        return hash;
-    }
+    // private async Task<string> GeneratePdf(List<string> picturesOfTasks, int sitId)
+    // {
+    //     picturesOfTasks.Reverse();
+    //     string downloadPath = Path.Combine(Path.GetTempPath(), "reports", "results");
+    //     Directory.CreateDirectory(downloadPath);
+    //     string timeStamp = DateTime.UtcNow.ToString("yyyyMMdd") + "_" + DateTime.UtcNow.ToString("hhmmss");
+    //     string tempPdfFileName = $"{timeStamp}{sitId}_temp.pdf";
+    //     string tempPdfFilePath = Path.Combine(downloadPath, tempPdfFileName);
+    //     var document = Document.Create(container =>
+    //     {
+    //         container.Page(page =>
+    //         {
+    //             page.Content()
+    //                 .Padding(1, Unit.Centimetre)
+    //                 .Column(x =>
+    //                 {
+    //                     // loop over all images and add them to the document
+    //                     var i = 0;
+    //                     foreach (var imageName in picturesOfTasks)
+    //                     {
+    //                         var storageResult = sdkCore.GetFileFromS3Storage(imageName).GetAwaiter().GetResult();
+    //                         x.Item().Image(storageResult.ResponseStream)
+    //                             .FitArea();
+    //                         if (i < picturesOfTasks.Count - 1)
+    //                         {
+    //                             x.Item().PageBreak();
+    //                         }
+    //                         i++;
+    //                     }
+    //                 });
+    //         });
+    //     }).GeneratePdf();
+    //
+    //     await using var fileStream = new FileStream(tempPdfFilePath, FileMode.Create, FileAccess.Write);
+    //     // save the byte[] to a file.
+    //     await fileStream.WriteAsync(document, 0, document.Length);
+    //     await fileStream.FlushAsync();
+    //
+    //     // Upload PDF
+    //     // string pdfFileName = null;
+    //     string hash = await sdkCore.PdfUpload(tempPdfFilePath);
+    //     if (hash != null)
+    //     {
+    //         //rename local file
+    //         FileInfo fileInfo = new FileInfo(tempPdfFilePath);
+    //         fileInfo.CopyTo(downloadPath + "/" + hash + ".pdf", true);
+    //         fileInfo.Delete();
+    //         await sdkCore.PutFileToStorageSystem(Path.Combine(downloadPath, $"{hash}.pdf"), $"{hash}.pdf");
+    //
+    //         // delete local file
+    //         File.Delete(downloadPath + "/" + hash + ".pdf");
+    //         // TODO Remove from file storage?
+    //     }
+    //
+    //     return hash;
+    // }
 }
