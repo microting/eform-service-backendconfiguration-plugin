@@ -924,6 +924,78 @@ public class SearchListJob : IJob
                 }
             }
                 break;
+            case 5:
+            {
+                /* Find all compliances which have expired today and we have call sdk and move the eform from the current folder to the expired folder
+                 * also we need to set the ignore_end_date, when doing the call.
+                 * The expired folder is found by looking at the area rule -> area -> expired folder
+                 */
+                var changeDate = DateTime.Parse("2025-10-30");
+
+                var complianceList = await _backendConfigurationDbContext.Compliances
+                    .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+                    .Where(x => x.Deadline < DateTime.UtcNow)
+                    .Where(x => x.Deadline > changeDate)
+                    .AsNoTracking()
+                    .OrderBy(x => x.Deadline)
+                    .ToListAsync();
+
+                var listOfPropertieIdsFromComplianceList= complianceList
+                    .Select(x => x.PropertyId)
+                    .Distinct()
+                    .ToList();
+
+                var properties = await _backendConfigurationDbContext.Properties
+                    .Where(x => listOfPropertieIdsFromComplianceList.Contains(x.Id))
+                    .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+                    .ToListAsync();
+
+                foreach (var compliance in complianceList)
+                {
+                    var areaRulePlanningQuery = _backendConfigurationDbContext.AreaRulePlannings
+                        .Include(x => x.AreaRulePlanningTags)
+                        .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+                        .Where(x => x.ItemPlanningId == compliance.PlanningId);
+
+                    var areaRulePlanning = await areaRulePlanningQuery
+                        .Select(x => new { x.AreaRuleId, x.StartDate, x.Id, x.ComplianceEnabled })
+                        .FirstOrDefaultAsync();
+
+                    if (!areaRulePlanning.ComplianceEnabled)
+                    {
+                        continue;
+                    }
+
+                    var microtingSdkCaseId = compliance.MicrotingSdkCaseId;
+                    var theCase = await _sdkDbContext.Cases.Where(x => x.Id == microtingSdkCaseId)
+                        // .Select(x => x.MicrotingUid)
+                        .FirstAsync();
+
+                    var property = properties
+                        // .Select(x => x.FolderId)
+                        .First(x => x.Id == compliance.PropertyId);
+
+                    var folderAndFolderTranslation = await _sdkDbContext.Folders
+                        .Join(_sdkDbContext.FolderTranslations,
+                            folder => folder.Id,
+                            folderTranslation => folderTranslation.FolderId,
+                            (folder, folderTranslation) => new {folder, folderTranslation})
+                        .Where(x => x.folder.ParentId == property.FolderId &&
+                                    x.folderTranslation.Name == "00. Overdue tasks")
+                        .FirstOrDefaultAsync();
+
+                    var site = await _sdkDbContext.Sites
+                        .Where(x => x.Id == theCase.SiteId)
+                        .Select(x => x.MicrotingUid)
+                        .FirstAsync();
+
+                    await _core.UpdateDeployedeForm((int)theCase.MicrotingUid, site.ToString(), (int)folderAndFolderTranslation.folder.MicrotingUid, true);
+                    Console.WriteLine($"Moved compliance case with id: {theCase.Id} to overdue folder");
+                    var comp = await _backendConfigurationDbContext.Compliances.FirstAsync(x => x.Id == compliance.Id);
+                    await comp.Delete(_backendConfigurationDbContext).ConfigureAwait(false);
+                }
+                break;
+            }
             case 8:
             {
                 Log.LogEvent("SearchListJob.Task: SearchListJob.Execute got called at 8:00 UTC - Opgavestatus");
