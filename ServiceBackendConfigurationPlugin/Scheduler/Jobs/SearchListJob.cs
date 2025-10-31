@@ -930,7 +930,17 @@ public class SearchListJob : IJob
                  * also we need to set the ignore_end_date, when doing the call.
                  * The expired folder is found by looking at the area rule -> area -> expired folder
                  */
-                var changeDate = DateTime.Parse("2025-10-30");
+                var complianceMovementIsEnabled = await _backendConfigurationDbContext.PluginConfigurationValues
+                    .FirstOrDefaultAsync(x => x.Name == "BackendConfigurationSettings:ComplianceOverdueMovementEnabled");
+
+                if (complianceMovementIsEnabled == null || !bool.TryParse(complianceMovementIsEnabled.Value, out var isEnabled) || !isEnabled)
+                {
+                    Log.LogEvent("SearchListJob.Task: Compliance overdue movement is disabled. Exiting.");
+                    break;
+                }
+
+
+                var changeDate = DateTime.Parse("2025-10-30 00:00:00");
 
                 var complianceList = await _backendConfigurationDbContext.Compliances
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
