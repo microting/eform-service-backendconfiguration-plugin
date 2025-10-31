@@ -946,6 +946,7 @@ public class SearchListJob : IJob
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                     .Where(x => x.Deadline < DateTime.UtcNow)
                     .Where(x => x.Deadline > changeDate)
+                    .Where(x => x.MovedToExpiredFolder == false)
                     .AsNoTracking()
                     .OrderBy(x => x.Deadline)
                     .ToListAsync();
@@ -1002,7 +1003,8 @@ public class SearchListJob : IJob
                     await _core.UpdateDeployedeForm((int)theCase.MicrotingUid, site.ToString(), (int)folderAndFolderTranslation.folder.MicrotingUid, true);
                     Console.WriteLine($"Moved compliance case with id: {theCase.Id} to overdue folder");
                     var comp = await _backendConfigurationDbContext.Compliances.FirstAsync(x => x.Id == compliance.Id);
-                    await comp.Delete(_backendConfigurationDbContext).ConfigureAwait(false);
+                    comp.MovedToExpiredFolder = true;
+                    await comp.Update(_backendConfigurationDbContext);
                 }
                 break;
             }
