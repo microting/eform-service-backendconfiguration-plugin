@@ -924,7 +924,7 @@ public class SearchListJob : IJob
                 }
             }
                 break;
-            case 5:
+            case 9:
             {
                 /* Find all compliances which have expired today and we have call sdk and move the eform from the current folder to the expired folder
                  * also we need to set the ignore_end_date, when doing the call.
