@@ -289,88 +289,60 @@ public class EFormCompletedHandler(
                 Console.WriteLine($"Deadline: {deadline}");
                 // backendConfigurationPnDbContext.Database.Log = Console.Write;
 
-                var complianceList = await backendConfigurationPnDbContext.Compliances
+                var oneCompliance =
+                    await backendConfigurationPnDbContext.Compliances.FirstOrDefaultAsync(x =>
+                        x.PlanningCaseSiteId == planningCaseSite.PlanningCaseId);
+
+                if (oneCompliance == null)
+                {
+                    var complianceList = await backendConfigurationPnDbContext.Compliances
                     .Where(x => x.Deadline == new DateTime(deadline.Year, deadline.Month, deadline.Day, 0, 0, 0))
                     .AsNoTracking()
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                     .Where(x => x.PlanningId == planningCaseSite.PlanningId).ToListAsync();
 
-                Console.WriteLine($"complianceList.Count: {complianceList.Count}");
+                    Console.WriteLine($"complianceList.Count: {complianceList.Count}");
 
-                foreach (var compliance in complianceList)
-                {
-
-                    if (compliance != null)
+                    foreach (var compliance in complianceList)
                     {
-                        var dbCompliance =
-                            await backendConfigurationPnDbContext.Compliances.FirstAsync(
-                                x => x.Id == compliance.Id);
-                        await dbCompliance.Delete(backendConfigurationPnDbContext);
-                        Console.WriteLine($"Deleted compliance {compliance.Id}");
-                    }
 
-                    var areaRulePlanning = await backendConfigurationPnDbContext.AreaRulePlannings.AsNoTracking()
-                        .Where(x => x.ItemPlanningId == planningCaseSite.PlanningId).FirstOrDefaultAsync();
-
-                    var property =
-                        await backendConfigurationPnDbContext.Properties.FirstOrDefaultAsync(x =>
-                            x.Id == areaRulePlanning.PropertyId);
-
-                    if (property == null)
-                    {
-                        return;
-                    }
-
-                    var planningSite = await backendConfigurationPnDbContext.PlanningSites
-                        .Where(x =>
-                            x.WorkflowState != ChemicalsBase.Infrastructure.Constants.Constants.WorkflowStates.Removed)
-                        .FirstAsync(x =>
-                            x.SiteId == planningCaseSite.MicrotingSdkSiteId && x.AreaRulePlanningsId == areaRulePlanning.Id);
-
-                    planningSite.Status = 100;
-                    Console.WriteLine($"Updated planningSite {planningSite.Id} to completed");
-                    await planningSite.Update(backendConfigurationPnDbContext);
-
-
-                    if (backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
-                            x.Deadline < DateTime.UtcNow && x.PropertyId == property.Id &&
-                            x.WorkflowState != Constants.WorkflowStates.Removed))
-                    {
-                        property.ComplianceStatus = 2;
-                        Console.WriteLine($"Updated property {property.Id} to complianceStatus 2");
-                        property.ComplianceStatusThirty = 2;
-                        await property.Update(backendConfigurationPnDbContext);
-                    }
-                    else
-                    {
-                        if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
-                                x.Deadline < DateTime.UtcNow.AddDays(30) && x.PropertyId == property.Id &&
-                                x.WorkflowState != Constants.WorkflowStates.Removed))
+                        if (compliance != null)
                         {
-                            property.ComplianceStatusThirty = 0;
-                            await property.Update(backendConfigurationPnDbContext);
-                        }
-
-                        if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
-                                x.Deadline < DateTime.UtcNow && x.PropertyId == property.Id &&
-                                x.WorkflowState != Constants.WorkflowStates.Removed))
-                        {
-                            property.ComplianceStatus = 0;
-                            Console.WriteLine($"Updated property {property.Id} to complianceStatus 0");
-                            await property.Update(backendConfigurationPnDbContext);
+                            var dbCompliance =
+                                await backendConfigurationPnDbContext.Compliances.FirstAsync(
+                                    x => x.Id == compliance.Id);
+                            await dbCompliance.Delete(backendConfigurationPnDbContext);
+                            Console.WriteLine($"Deleted compliance {compliance.Id}");
                         }
                     }
                 }
-
-                if (eformIdForControlFloatingLayer == dbCase.CheckListId)
+                else
                 {
-                    // FloatingLayerCaseCompletedHandler will handle this case
-                    // await bus.SendLocal(new FloatingLayerCaseCompleted(message.CaseId, message.MicrotingUId,
-                    //     message.CheckId, message.SiteUId));
+                    await oneCompliance.Delete(backendConfigurationPnDbContext);
+                    Console.WriteLine($"Deleted compliance {oneCompliance.Id}");
                 }
 
+                var areaRulePlanning = await backendConfigurationPnDbContext.AreaRulePlannings.AsNoTracking()
+                    .Where(x => x.ItemPlanningId == planningCaseSite.PlanningId).FirstOrDefaultAsync();
 
-                // }
+                var property =
+                    await backendConfigurationPnDbContext.Properties.FirstOrDefaultAsync(x =>
+                        x.Id == areaRulePlanning.PropertyId);
+
+                if (property == null)
+                {
+                    return;
+                }
+
+                var planningSite = await backendConfigurationPnDbContext.PlanningSites
+                    .Where(x =>
+                        x.WorkflowState != ChemicalsBase.Infrastructure.Constants.Constants.WorkflowStates.Removed)
+                    .FirstAsync(x =>
+                        x.SiteId == planningCaseSite.MicrotingSdkSiteId && x.AreaRulePlanningsId == areaRulePlanning.Id);
+
+                planningSite.Status = 100;
+                Console.WriteLine($"Updated planningSite {planningSite.Id} to completed");
+                await planningSite.Update(backendConfigurationPnDbContext);
             }
         }
     }

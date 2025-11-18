@@ -103,11 +103,11 @@ public class EformParsedByServerHandler(
             planningSite.Status = 70;
             await planningSite.Update(backendConfigurationPnDbContext);
 
-            if (!areaRulePlanning.ComplianceEnabled)
-            {
-                Console.WriteLine($"Compliance not enabled for areaRulePlanning.Id : {areaRulePlanning.Id}");
-                return;
-            }
+            // if (!areaRulePlanning.ComplianceEnabled)
+            // {
+            //     Console.WriteLine($"Compliance not enabled for areaRulePlanning.Id : {areaRulePlanning.Id}");
+            //     return;
+            // }
 
             if (planning.RepeatEvery == 0 && planning.RepeatType == RepeatType.Day) { }
             else
@@ -155,7 +155,7 @@ public class EformParsedByServerHandler(
                 }
 
                 if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
-                        x.Deadline == (DateTime)planning.NextExecutionTime &&
+                        x.PlanningCaseSiteId == planningCaseSite.PlanningCaseId &&
                         x.PlanningId == planningCaseSite.PlanningId
                         // &&
                         // x.PlanningCaseSiteId == planningCaseSite.Id &&
@@ -163,7 +163,6 @@ public class EformParsedByServerHandler(
                         )
                     )
                 {
-
                     Console.WriteLine($"We did not find a compliance for {planningCaseSite.PlanningId}, so we create one");
                     var deadLine = (DateTime)planning.NextExecutionTime!;
                     try
@@ -176,8 +175,8 @@ public class EformParsedByServerHandler(
                             Deadline = new DateTime(deadLine.Year, deadLine.Month, deadLine.Day, 0, 0, 0),
                             StartDate = (DateTime)planning.LastExecutedTime!,
                             MicrotingSdkeFormId = planning.RelatedEFormId,
-                            // PlanningCaseSiteId = planningCaseSite.Id,
-                            MicrotingSdkCaseId = (int) message.CaseId!
+                            MicrotingSdkCaseId = (int) message.CaseId!,
+                            PlanningCaseSiteId = planningCaseSite.PlanningCaseId
                         };
 
                         await compliance.Create(backendConfigurationPnDbContext);
@@ -207,38 +206,38 @@ public class EformParsedByServerHandler(
                         // x.PlanningCaseSiteId == planningCaseSite.Id &&
                         // x.WorkflowState != Constants.WorkflowStates.Removed
                     );
-                    complianceEntry.StartDate = (DateTime)planning.LastExecutedTime!;
-                    complianceEntry.MicrotingSdkCaseId = (int)message.CaseId!;
-                    complianceEntry.WorkflowState = Constants.WorkflowStates.Created;
-                    await complianceEntry.Update(backendConfigurationPnDbContext);
+                    // complianceEntry.StartDate = (DateTime)planning.LastExecutedTime!;
+                    // complianceEntry.MicrotingSdkCaseId = (int)message.CaseId!;
+                    // complianceEntry.WorkflowState = Constants.WorkflowStates.Created;
+                    // await complianceEntry.Update(backendConfigurationPnDbContext);
                 }
 
-                var today = new DateTime(DateTime.Now.AddDays(1).Year, DateTime.Now.AddDays(1).Month, DateTime.Now.AddDays(1).Day, 0, 0, 0);
-
-                if (backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x => x.Deadline < today && x.PropertyId == property.Id && x.WorkflowState != Constants.WorkflowStates.Removed))
-                {
-                    property.ComplianceStatus = 2;
-                    property.ComplianceStatusThirty = 2;
-                    await property.Update(backendConfigurationPnDbContext);
-                }
-                else
-                {
-                    if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
-                            x.Deadline < DateTime.UtcNow.AddDays(30) && x.PropertyId == property.Id &&
-                            x.WorkflowState != Constants.WorkflowStates.Removed))
-                    {
-                        property.ComplianceStatusThirty = 0;
-                        await property.Update(backendConfigurationPnDbContext);
-                    }
-
-                    if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
-                            x.Deadline < DateTime.UtcNow && x.PropertyId == property.Id &&
-                            x.WorkflowState != Constants.WorkflowStates.Removed))
-                    {
-                        property.ComplianceStatus = 0;
-                        await property.Update(backendConfigurationPnDbContext);
-                    }
-                }
+                // var today = new DateTime(DateTime.Now.AddDays(1).Year, DateTime.Now.AddDays(1).Month, DateTime.Now.AddDays(1).Day, 0, 0, 0);
+                //
+                // if (backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x => x.Deadline < today && x.PropertyId == property.Id && x.WorkflowState != Constants.WorkflowStates.Removed))
+                // {
+                //     property.ComplianceStatus = 2;
+                //     property.ComplianceStatusThirty = 2;
+                //     await property.Update(backendConfigurationPnDbContext);
+                // }
+                // else
+                // {
+                //     if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
+                //             x.Deadline < DateTime.UtcNow.AddDays(30) && x.PropertyId == property.Id &&
+                //             x.WorkflowState != Constants.WorkflowStates.Removed))
+                //     {
+                //         property.ComplianceStatusThirty = 0;
+                //         await property.Update(backendConfigurationPnDbContext);
+                //     }
+                //
+                //     if (!backendConfigurationPnDbContext.Compliances.AsNoTracking().Any(x =>
+                //             x.Deadline < DateTime.UtcNow && x.PropertyId == property.Id &&
+                //             x.WorkflowState != Constants.WorkflowStates.Removed))
+                //     {
+                //         property.ComplianceStatus = 0;
+                //         await property.Update(backendConfigurationPnDbContext);
+                //     }
+                // }
             }
         }
     }
