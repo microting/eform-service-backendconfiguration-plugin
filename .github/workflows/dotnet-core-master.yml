@@ -105,7 +105,7 @@ jobs:
         dotnet build --configuration Release eform-service-backendconfiguration-plugin/ci/eformparsed/
     - name: run eformparsed test program
       run: |
-        dotnet eform-service-backendconfiguration-plugin/ci/eformparsed/bin/Release/net9.0/eformparsed.dll
+        dotnet eform-service-backendconfiguration-plugin/ci/eformparsed/bin/Release/net10.0/eformparsed.dll
     - name: Stop the newly build Docker container
       run: docker stop my-container
     - name: Get standard output
