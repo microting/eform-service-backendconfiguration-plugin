@@ -80,7 +80,7 @@ public class EformParsedByServerHandler(
 
         if (planningCaseSite == null)
         {
-            Console.WriteLine($"No planningCaseSite found for caseId : {message.CaseId}");
+            Console.WriteLine($"info: No planningCaseSite found for caseId : {message.CaseId}");
             return;
         }
 
@@ -112,7 +112,7 @@ public class EformParsedByServerHandler(
             if (planning.RepeatEvery == 0 && planning.RepeatType == RepeatType.Day) { }
             else
             {
-                Console.WriteLine($"Compliance is enabled for areaRulePlanning.Id : {areaRulePlanning.Id}");
+                Console.WriteLine($"info: Compliance is enabled for areaRulePlanning.Id : {areaRulePlanning.Id}");
                 if (planning.NextExecutionTime == null)
                 {
                     var now = DateTime.UtcNow;
@@ -163,7 +163,7 @@ public class EformParsedByServerHandler(
                         )
                     )
                 {
-                    Console.WriteLine($"We did not find a compliance for {planningCaseSite.PlanningId}, so we create one");
+                    Console.WriteLine($"info: We did not find a compliance for {planningCaseSite.PlanningId}, so we create one");
                     var deadLine = (DateTime)planning.NextExecutionTime!;
                     try
                     {
@@ -180,7 +180,7 @@ public class EformParsedByServerHandler(
                         };
 
                         await compliance.Create(backendConfigurationPnDbContext);
-                        Console.WriteLine("We created a compliance");
+                        Console.WriteLine("info: We created a compliance");
 
                     } catch (Exception ex)
                     {
@@ -188,7 +188,7 @@ public class EformParsedByServerHandler(
                         // That is completely fine and we just skip it, otherwise we throw the exception.
                         if (ex.InnerException is {HResult: -2147467259})
                         {
-                            Console.WriteLine("We did not create a compliance, since it already exists");
+                            Console.WriteLine("info: We did not create a compliance, since it already exists");
                         }
                         else
                         {

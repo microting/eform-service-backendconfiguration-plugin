@@ -36,11 +36,11 @@ public class WorkOrderCaseCompletedHandler(
 {
     public async Task Handle(WorkOrderCaseCompleted message)
     {
-        Console.WriteLine("WorkOrderCaseCompletedHandler .Handle called");
-        Console.WriteLine($"message.CaseId: {message.CaseId}");
-        Console.WriteLine($"message.MicrotingUId: {message.MicrotingUId}");
-        Console.WriteLine($"message.CheckId: {message.CheckId}");
-        Console.WriteLine($"message.SiteUId: {message.SiteUId}");
+        Console.WriteLine("info: WorkOrderCaseCompletedHandler .Handle called");
+        Console.WriteLine($"info: message.CaseId: {message.CaseId}");
+        Console.WriteLine($"info: message.MicrotingUId: {message.MicrotingUId}");
+        Console.WriteLine($"info: message.CheckId: {message.CheckId}");
+        Console.WriteLine($"info: message.SiteUId: {message.SiteUId}");
         await using var sdkDbContext = sdkCore.DbContextHelper.GetDbContext();
         await using var
             itemsPlanningPnDbContext = itemsPlanningDbContextHelper.GetDbContext();
@@ -89,7 +89,7 @@ public class WorkOrderCaseCompletedHandler(
 
         if (eformIdForNewTasks == dbCase.CheckListId && workOrderCase != null)
         {
-            Console.WriteLine($"It's a new task");
+            Console.WriteLine($"info: It's a new task");
             var property = workOrderCase.PropertyWorker.Property;
 
             var propertyWorkers = property.PropertyWorkers
@@ -277,7 +277,7 @@ public class WorkOrderCaseCompletedHandler(
         }
         else if (eformIdForOngoingTasks == dbCase.CheckListId && workOrderCase != null)
         {
-            Console.WriteLine($"It's an ongoing task");
+            Console.WriteLine($"info: It's an ongoing task");
             var property = workOrderCase.PropertyWorker.Property;
 
             var propertyWorkers = property.PropertyWorkers
@@ -481,7 +481,7 @@ public class WorkOrderCaseCompletedHandler(
         bool hasImages,
         List<KeyValuePair<string, string>> picturesOfTasks)
     {
-        Console.WriteLine($"Deploying eform to {propertyWorkers.Count} workers");
+        Console.WriteLine($"info: Deploying eform to {propertyWorkers.Count} workers");
         int? folderId = null;
         await using var sdkDbContext = sdkCore.DbContextHelper.GetDbContext();
         await using var backendConfigurationPnDbContext =
@@ -698,8 +698,9 @@ public class WorkOrderCaseCompletedHandler(
                 try {
                     await sdkCore.CaseDelete(theCase.CaseId);
                 } catch (Exception e) {
-                    Console.WriteLine(e);
-                    Console.WriteLine($"faild to delete case {theCase.CaseId}");
+                    Console.WriteLine($"fail: {e}");
+                    Console.WriteLine($"fail: {e.StackTrace}");
+                    Console.WriteLine($"fail: faild to delete case {theCase.CaseId}");
                 }
                 await theCase.Delete(backendConfigurationPnDbContext);
             }
@@ -713,8 +714,9 @@ public class WorkOrderCaseCompletedHandler(
                 {
                     await sdkCore.CaseDelete(parentCase.CaseId);
                 } catch (Exception e) {
-                    Console.WriteLine(e);
-                    Console.WriteLine($"faild to delete case {parentCase.CaseId}");
+                    Console.WriteLine($"fail: {e}");
+                    Console.WriteLine($"fail: {e.StackTrace}");
+                    Console.WriteLine($"fail: faild to delete case {parentCase.CaseId}");
                 }
             }
             await parentCase.Delete(backendConfigurationPnDbContext);

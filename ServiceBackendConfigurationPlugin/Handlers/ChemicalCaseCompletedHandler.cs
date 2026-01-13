@@ -65,7 +65,7 @@ public class ChemicalCaseCompletedHandler(
 
         if (planningCaseSite == null)
         {
-            Console.WriteLine($"planningCaseSite is null for CheckId: {message.CheckId}");
+            Console.WriteLine($"info: planningCaseSite is null for CheckId: {message.CheckId}");
             return;
         }
 
@@ -815,7 +815,7 @@ public class ChemicalCaseCompletedHandler(
             {
                 using var webClient = new HttpClient();
                 Console.WriteLine(
-                    $"Trying to download https://chemicalbase.microting.com/api/chemicals-pn/get-pdf-file?fileName={product.FileName}");
+                    $"info: Trying to download https://chemicalbase.microting.com/api/chemicals-pn/get-pdf-file?fileName={product.FileName}");
                 await using (var s = await webClient.GetStreamAsync(
                                  $"https://chemicalbase.microting.com/api/chemicals-pn/get-pdf-file?fileName={product.FileName}"))
                 {

@@ -49,11 +49,11 @@ public class EFormCompletedHandler(
 
     public async Task Handle(eFormCompleted message)
     {
-        Console.WriteLine("EFormCompletedHandler .Handle called");
-        Console.WriteLine($"message.CaseId: {message.CaseId}");
-        Console.WriteLine($"message.MicrotingUId: {message.MicrotingUId}");
-        Console.WriteLine($"message.CheckId: {message.CheckId}");
-        Console.WriteLine($"message.SiteUId: {message.SiteUId}");
+        Console.WriteLine("info: EFormCompletedHandler .Handle called");
+        Console.WriteLine($"info: message.CaseId: {message.CaseId}");
+        Console.WriteLine($"info: message.MicrotingUId: {message.MicrotingUId}");
+        Console.WriteLine($"info: message.CheckId: {message.CheckId}");
+        Console.WriteLine($"info: message.SiteUId: {message.SiteUId}");
         await using var sdkDbContext = sdkCore.DbContextHelper.GetDbContext();
         await using var
             itemsPlanningPnDbContext = itemsPlanningDbContextHelper.GetDbContext();
@@ -88,13 +88,13 @@ public class EFormCompletedHandler(
 
         if (eformIdForNewTasks == 0)
         {
-            Console.WriteLine("eformIdForNewTasks is 0");
+            Console.WriteLine("info: eformIdForNewTasks is 0");
             return;
         }
 
         if (eformIdForOngoingTasks == 0)
         {
-            Console.WriteLine("eformIdForOngoingTasks is 0");
+            Console.WriteLine("info: eformIdForOngoingTasks is 0");
             return;
         }
 
@@ -127,7 +127,7 @@ public class EFormCompletedHandler(
                          .FirstOrDefaultAsync(x => x.MicrotingCheckUid == message.CheckId);
         if (dbCase == null)
         {
-            Console.WriteLine("dbCase is null");
+            Console.WriteLine("info: dbCase is null");
             return;
         }
 
@@ -142,7 +142,7 @@ public class EFormCompletedHandler(
             .FirstOrDefaultAsync();
         if (workorderCase != null)
         {
-            Console.WriteLine($"found workorderCase: {workorderCase.Id}");
+            Console.WriteLine($"info: found workorderCase: {workorderCase.Id}");
         }
 
         if (eformIdForNewTasks == dbCase.CheckListId && workorderCase != null)
@@ -190,7 +190,7 @@ public class EFormCompletedHandler(
 
             if (planningCaseSite == null)
             {
-                Console.WriteLine($"planningCaseSite is null for CheckId: {message.CheckId}");
+                Console.WriteLine($"info: planningCaseSite is null for CheckId: {message.CheckId}");
                 return;
             }
 
@@ -262,7 +262,7 @@ public class EFormCompletedHandler(
                 while (planningCaseSite.Status != 100 && count < 100)
                 {
                     Thread.Sleep(1000);
-                    Console.WriteLine($"Waiting for case {planningCaseSite.Id} to be completed");
+                    Console.WriteLine($"info: Waiting for case {planningCaseSite.Id} to be completed");
                     planningCaseSite = itemsPlanningPnDbContext.PlanningCaseSites.AsNoTracking()
                         .First(x => x.Id == planningCaseSite.Id);
                     if (planningCaseSite.Status == 100)
@@ -275,18 +275,18 @@ public class EFormCompletedHandler(
                 }
                 if (planningCaseSite.Status != 100)
                 {
-                    Console.WriteLine($"planningCaseSite {planningCaseSite.Id} is not completed");
+                    Console.WriteLine($"info: planningCaseSite {planningCaseSite.Id} is not completed");
                     return;
                 }
 
-                Console.WriteLine($"planningCaseSite {planningCaseSite.Id} is completed");
+                Console.WriteLine($"info: planningCaseSite {planningCaseSite.Id} is completed");
                 Thread.Sleep(10000);
 
-                Console.WriteLine($"planning.NextExecutionTime: {planning.NextExecutionTime}");
+                Console.WriteLine($"info: planning.NextExecutionTime: {planning.NextExecutionTime}");
 
 
                 var deadline = ((DateTime) planning.NextExecutionTime);
-                Console.WriteLine($"Deadline: {deadline}");
+                Console.WriteLine($"info: Deadline: {deadline}");
                 // backendConfigurationPnDbContext.Database.Log = Console.Write;
 
                 var oneCompliance =
@@ -301,7 +301,7 @@ public class EFormCompletedHandler(
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                     .Where(x => x.PlanningId == planningCaseSite.PlanningId).ToListAsync();
 
-                    Console.WriteLine($"complianceList.Count: {complianceList.Count}");
+                    Console.WriteLine($"info: complianceList.Count: {complianceList.Count}");
 
                     foreach (var compliance in complianceList)
                     {
@@ -312,14 +312,14 @@ public class EFormCompletedHandler(
                                 await backendConfigurationPnDbContext.Compliances.FirstAsync(
                                     x => x.Id == compliance.Id);
                             await dbCompliance.Delete(backendConfigurationPnDbContext);
-                            Console.WriteLine($"Deleted compliance {compliance.Id}");
+                            Console.WriteLine($"info: Deleted compliance {compliance.Id}");
                         }
                     }
                 }
                 else
                 {
                     await oneCompliance.Delete(backendConfigurationPnDbContext);
-                    Console.WriteLine($"Deleted compliance {oneCompliance.Id}");
+                    Console.WriteLine($"info: Deleted compliance {oneCompliance.Id}");
                 }
 
                 var areaRulePlanning = await backendConfigurationPnDbContext.AreaRulePlannings.AsNoTracking()
@@ -341,7 +341,7 @@ public class EFormCompletedHandler(
                         x.SiteId == planningCaseSite.MicrotingSdkSiteId && x.AreaRulePlanningsId == areaRulePlanning.Id);
 
                 planningSite.Status = 100;
-                Console.WriteLine($"Updated planningSite {planningSite.Id} to completed");
+                Console.WriteLine($"info: Updated planningSite {planningSite.Id} to completed");
                 await planningSite.Update(backendConfigurationPnDbContext);
             }
         }

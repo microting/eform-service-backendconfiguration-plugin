@@ -232,13 +232,13 @@ public class SearchListJob : IJob
                                 else
                                 {
                                     Console.WriteLine(
-                                        $"Chemical is removed so skipping : {chemical.Name} no {i} of {count}");
+                                        $"info: Chemical is removed so skipping : {chemical.Name} no {i} of {count}");
                                 }
                             }
                             else
                             {
                                 Console.WriteLine(
-                                    $"Chemical does not exist, so creating : {chemical.Name} no {i} of {count}");
+                                    $"info: Chemical does not exist, so creating : {chemical.Name} no {i} of {count}");
                                 await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
                             }
 
@@ -252,7 +252,7 @@ public class SearchListJob : IJob
 
                         foreach (var chemical in toBeRemoved)
                         {
-                            Console.WriteLine($@"Deleting chemical: {chemical.Name}");
+                            Console.WriteLine($@"info: Deleting chemical: {chemical.Name}");
                             await chemical.Delete(chemicalsDbContext);
                         }
 
@@ -260,13 +260,15 @@ public class SearchListJob : IJob
                 }
                 catch (Exception e)
                 {
-                    Console.WriteLine(e);
+                    Console.WriteLine($"fail: {e.Message}");
+                    Console.WriteLine($"fail: {e.StackTrace}");
+                    SentrySdk.CaptureException(e);
                 }
 
                 break;
             case 3:
             {
-                Log.LogEvent("SearchListJob.Task: SearchListJob.Execute got called at 3am - Chemical entities");
+                Log.LogEvent("info: SearchListJob.Task: SearchListJob.Execute got called at 3am - Chemical entities");
 
                 var sdkDbContext = _core.DbContextHelper.GetDbContext();
                 var entityGroupBarcodeId =
@@ -314,20 +316,20 @@ public class SearchListJob : IJob
                             }
 
                             Console.WriteLine(
-                                $"Chemical does not exist, but it is removed, so skipping : {chemical.Name}");
+                                $"info: Chemical does not exist, but it is removed, so skipping : {chemical.Name}");
                         }
                         else
                         {
                             if (chemical.WorkflowState == Constants.WorkflowStates.Removed)
                             {
                                 Console.WriteLine(
-                                    $"Chemical already exist, but is removed, so removing entity : {chemical.Name}");
+                                    $"info: Chemical already exist, but is removed, so removing entity : {chemical.Name}");
                                 var et = await sdkDbContext.EntityItems.FirstOrDefaultAsync(x =>
                                     x.EntityGroupId == entityGroupRegNo.Id && x.Name == chemical.RegistrationNo);
                                 await _core.EntityItemDelete(et.Id);
                             }
 
-                            Console.WriteLine($"Chemical already exist, so skipping : {chemical.Name}");
+                            Console.WriteLine($"info: Chemical already exist, so skipping : {chemical.Name}");
                         }
                     });
                 }
@@ -336,7 +338,7 @@ public class SearchListJob : IJob
             }
             case 4:
             {
-                Log.LogEvent("SearchListJob.Task: SearchListJob.Execute got called at 4:00 - Chemicalss");
+                Log.LogEvent("info: SearchListJob.Task: SearchListJob.Execute got called at 4:00 - Chemicalss");
                 var properties = await _backendConfigurationDbContext.Properties
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed).ToListAsync();
 
@@ -402,7 +404,7 @@ public class SearchListJob : IJob
                             if (moveChemical)
                             {
                                 Console.WriteLine(
-                                    $"Moving chemical with name : {chemical.Name} and registration no {chemical.RegistrationNo}");
+                                    $"info: Moving chemical with name : {chemical.Name} and registration no {chemical.RegistrationNo}");
 
                                 var planningCaseSite =
                                     await _itemsPlanningPnDbContext.PlanningCaseSites.AsNoTracking()
@@ -935,7 +937,7 @@ public class SearchListJob : IJob
 
                 if (complianceMovementIsEnabled == null || !bool.TryParse(complianceMovementIsEnabled.Value, out var isEnabled) || !isEnabled)
                 {
-                    Log.LogEvent("SearchListJob.Task: Compliance overdue movement is disabled. Exiting.");
+                    Log.LogEvent("info: SearchListJob.Task: Compliance overdue movement is disabled. Exiting.");
                     break;
                 }
 
@@ -1001,7 +1003,7 @@ public class SearchListJob : IJob
                         .FirstAsync();
 
                     await _core.UpdateDeployedeForm((int)theCase.MicrotingUid, site.ToString(), (int)folderAndFolderTranslation.folder.MicrotingUid, true);
-                    Console.WriteLine($"Moved compliance case with id: {theCase.Id} to overdue folder");
+                    Console.WriteLine($"info: Moved compliance case with id: {theCase.Id} to overdue folder");
                     var comp = await _backendConfigurationDbContext.Compliances.FirstAsync(x => x.Id == compliance.Id);
                     comp.MovedToExpiredFolder = true;
                     await comp.Update(_backendConfigurationDbContext);
@@ -1010,7 +1012,7 @@ public class SearchListJob : IJob
             }
             case 8:
             {
-                Log.LogEvent("SearchListJob.Task: SearchListJob.Execute got called at 8:00 UTC - Opgavestatus");
+                Log.LogEvent("info: SearchListJob.Task: SearchListJob.Execute got called at 8:00 UTC - Opgavestatus");
                 var properties = await _backendConfigurationDbContext.Properties
                     .Where(x => x.MainMailAddress != null && x.MainMailAddress != "")
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed).ToListAsync();
@@ -1067,7 +1069,7 @@ public class SearchListJob : IJob
 
                             var entities = new List<ComplianceModel>();
 
-                            Log.LogEvent("Opgavestatus. Found " + complianceList.Count + " compliances for property: " +
+                            Log.LogEvent("info: Opgavestatus. Found " + complianceList.Count + " compliances for property: " +
                                          property.Name);
                             foreach (var compliance in complianceList)
                             {
@@ -1281,7 +1283,8 @@ public class SearchListJob : IJob
                         }
                         catch (Exception e)
                         {
-                            Console.WriteLine(e);
+                            Console.WriteLine($"fail: {e.Message}");
+                            Console.WriteLine($"fail: {e.StackTrace}");
                             SentrySdk.CaptureException(e);
                         }
                     }
@@ -1365,7 +1368,9 @@ public class SearchListJob : IJob
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
+            Console.WriteLine($"fail: {e.Message}");
+            Console.WriteLine($"fail: {e.StackTrace}");
+            SentrySdk.CaptureException(e);
         }
     }
 

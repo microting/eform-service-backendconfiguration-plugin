@@ -175,13 +175,13 @@ public class Core : ISdkEventHandler
             SentrySdk.ConfigureScope(scope =>
             {
                 scope.SetTag("customerNo", number.ToString());
-                Console.WriteLine("customerNo: " + number);
+                Console.WriteLine("info: customerNo: " + number);
                 scope.SetTag("osVersion", Environment.OSVersion.ToString());
-                Console.WriteLine("osVersion: " + Environment.OSVersion);
+                Console.WriteLine("info: osVersion: " + Environment.OSVersion);
                 scope.SetTag("osArchitecture", RuntimeInformation.OSArchitecture.ToString());
-                Console.WriteLine("osArchitecture: " + RuntimeInformation.OSArchitecture);
+                Console.WriteLine("info: osArchitecture: " + RuntimeInformation.OSArchitecture);
                 scope.SetTag("osName", RuntimeInformation.OSDescription);
-                Console.WriteLine("osName: " + RuntimeInformation.OSDescription);
+                Console.WriteLine("info: osName: " + RuntimeInformation.OSDescription);
             });
 
             var pluginDbName = $"Database={dbPrefix}_eform-backend-configuration-plugin;";
@@ -246,11 +246,11 @@ public class Core : ISdkEventHandler
                 Console.WriteLine($"Connection string: {sdkConnectionString}");
 
                 var rabbitmqHost = _sdkCore.GetSdkSetting(Settings.rabbitMqHost).GetAwaiter().GetResult();
-                Console.WriteLine($"rabbitmqHost: {rabbitmqHost}");
+                Console.WriteLine($"info: rabbitmqHost: {rabbitmqHost}");
                 var rabbitMqUser = _sdkCore.GetSdkSetting(Settings.rabbitMqUser).GetAwaiter().GetResult();
-                Console.WriteLine($"rabbitMqUser: {rabbitMqUser}");
+                Console.WriteLine($"info: rabbitMqUser: {rabbitMqUser}");
                 var rabbitMqPassword = _sdkCore.GetSdkSetting(Settings.rabbitMqPassword).GetAwaiter().GetResult();
-                Console.WriteLine($"rabbitMqPassword: {rabbitMqPassword}");
+                Console.WriteLine($"info: rabbitMqPassword: {rabbitMqPassword}");
 
                 // var rabbitmqHost = connectionString.Contains("frontend")
                 //     ? $"frontend-{dbPrefix}-rabbitmq"
@@ -290,14 +290,14 @@ public class Core : ISdkEventHandler
                 //ReplaceCreateTask(connectionString, sdkConnectionString).GetAwaiter().GetResult();
             }
 
-            Console.WriteLine("ServiceBackendConfigurationPlugin started");
+            Console.WriteLine("info: ServiceBackendConfigurationPlugin started");
             return true;
         }
         catch (Exception ex)
         {
             var color = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.DarkRed;
-            Console.WriteLine("Start failed " + ex.Message);
+            Console.WriteLine("fail: Start failed " + ex.Message);
             Console.ForegroundColor = color;
             throw;
         }

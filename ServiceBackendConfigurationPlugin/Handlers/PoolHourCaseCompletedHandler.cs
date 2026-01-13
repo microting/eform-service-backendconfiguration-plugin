@@ -56,7 +56,7 @@ public class PoolHourCaseCompletedHandler(
 
         if (planningCaseSite == null)
         {
-            Console.WriteLine($"planningCaseSite is null for CheckId: {message.CheckId}");
+            Console.WriteLine($"info: planningCaseSite is null for CheckId: {message.CheckId}");
             return;
         }
 
