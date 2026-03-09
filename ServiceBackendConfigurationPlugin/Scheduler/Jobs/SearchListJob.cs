@@ -1012,6 +1012,13 @@ public class SearchListJob : IJob
             }
             case 8:
             {
+
+                // if today is not monday, then continue
+                if (DateTime.Now.DayOfWeek != DayOfWeek.Monday)
+                {
+                    return;
+                }
+
                 Log.LogEvent("info: SearchListJob.Task: SearchListJob.Execute got called at 8:00 UTC - Opgavestatus");
                 var properties = await _backendConfigurationDbContext.Properties
                     .Where(x => x.MainMailAddress != null && x.MainMailAddress != "")
