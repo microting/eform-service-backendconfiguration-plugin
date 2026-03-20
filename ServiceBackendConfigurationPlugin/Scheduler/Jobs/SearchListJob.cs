@@ -942,7 +942,7 @@ public class SearchListJob : IJob
                 }
 
 
-                var changeDate = DateTime.Parse("2025-10-30 00:00:00");
+                var changeDate = DateTime.Parse("2026-03-19 00:00:00");
 
                 var complianceList = await _backendConfigurationDbContext.Compliances
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
