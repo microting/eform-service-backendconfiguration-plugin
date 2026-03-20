@@ -941,8 +941,7 @@ public class SearchListJob : IJob
                     break;
                 }
 
-
-                var changeDate = DateTime.Parse("2026-03-19 00:00:00");
+                var changeDate = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, DateTime.UtcNow.Day, 0, 0, 0).AddDays(-1);
 
                 var complianceList = await _backendConfigurationDbContext.Compliances
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
