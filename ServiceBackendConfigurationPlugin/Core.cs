@@ -74,6 +74,7 @@ public class Core : ISdkEventHandler
     private static int _numberOfWorkers = 1;
     private BackendConfigurationPnDbContext _dbContext;
     private Timer _scheduleTimer;
+    private Timer _driveScheduleTimer;
     private ItemsPlanningPnDbContext _itemsPlanningDbContext;
     private BackendConfigurationDbContextHelper _backendConfigurationBackendConfigurationDbContextHelper;
     private ItemsPlanningDbContextHelper _itemsPlanningDbContextHelper;
@@ -283,6 +284,9 @@ public class Core : ISdkEventHandler
                     , new RebusInstaller(dbPrefix, connectionString, _maxParallelism, _numberOfWorkers, rabbitMqUser, rabbitMqPassword, rabbitmqHost)
                 );
                 _container.Register(Component.For<SearchListJob>());
+                _container.Register(Component.For<DriveChannelRenewalJob>());
+                _container.Register(Component.For<DriveTokenKeepaliveJob>());
+                _container.Register(Component.For<DriveReconcileJob>());
 
                 _bus = _container.Resolve<IBus>();
 
@@ -451,6 +455,50 @@ public class Core : ISdkEventHandler
         }
 
         _scheduleTimer = new Timer(Callback, null, TimeSpan.Zero, TimeSpan.FromMinutes(60));
+
+        // Google Drive integration (PR-6): one daily timer fires the
+        // channel-renewal, reconcile, and keep-alive jobs sequentially.
+        // Initial 5-minute delay lets the service finish warm-up before
+        // we start hammering the Drive API. Each job swallows its own
+        // exceptions so a failure in one doesn't sink the others.
+        async void DriveDailyCallback(object x)
+        {
+            try
+            {
+                await _container.Resolve<DriveChannelRenewalJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: DriveChannelRenewalJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            try
+            {
+                await _container.Resolve<DriveReconcileJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: DriveReconcileJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            // Keep-alive runs logically monthly but the safe approach is to
+            // run it daily and let the job filter by LastUsedAt < now-30d
+            // itself.
+            try
+            {
+                await _container.Resolve<DriveTokenKeepaliveJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: DriveTokenKeepaliveJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+        }
+
+        _driveScheduleTimer = new Timer(
+            DriveDailyCallback, null, TimeSpan.FromMinutes(5), TimeSpan.FromHours(24));
     }
 
     private async Task ReplaceCreateTask(string connectionStringBackend, string sdkConnectionString)
