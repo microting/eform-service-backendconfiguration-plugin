@@ -45,6 +45,8 @@ using Infrastructure.Helpers;
 using Installers;
 using Messages;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microting.eForm.Dto;
 using Microting.eForm.Infrastructure.Constants;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
@@ -202,7 +204,11 @@ public class Core : ISdkEventHandler
                 var contextFactory = new BackendConfigurationPnContextFactory();
 
                 _dbContext = contextFactory.CreateDbContext(new[] {connectionString});
-                _dbContext.Database.Migrate();
+                var historyRepo = _dbContext.GetService<IHistoryRepository>();
+                if (!historyRepo.Exists() || _dbContext.Database.GetPendingMigrations().Any())
+                {
+                    _dbContext.Database.Migrate();
+                }
                 _backendConfigurationBackendConfigurationDbContextHelper =
                     new BackendConfigurationDbContextHelper(connectionString);
 
@@ -238,7 +244,11 @@ public class Core : ISdkEventHandler
 
                 var caseTemplateDbContext =
                     caseTemplateContextFactory.CreateDbContext(new[] {caseTemplateConnectionString});
-                caseTemplateDbContext.Database.Migrate();
+                var caseTemplateHistoryRepo = caseTemplateDbContext.GetService<IHistoryRepository>();
+                if (!caseTemplateHistoryRepo.Exists() || caseTemplateDbContext.Database.GetPendingMigrations().Any())
+                {
+                    caseTemplateDbContext.Database.Migrate();
+                }
 
                 _coreAvailable = true;
                 _coreStatChanging = false;
