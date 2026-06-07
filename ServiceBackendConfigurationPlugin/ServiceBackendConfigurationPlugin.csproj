@@ -16,18 +16,18 @@
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.5" />
     <PackageReference Include="HtmlToOpenXml.dll" Version="3.4.1" />
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="10.0.8" />
-    <PackageReference Include="Microting.eForm" Version="10.0.30" />
+    <PackageReference Include="Microting.eForm" Version="10.0.31" />
     <PackageReference Include="Microting.EformAngularFrontendBase" Version="10.0.35" />
-    <PackageReference Include="Microting.EformBackendConfigurationBase" Version="10.0.40" />
-    <PackageReference Include="Microting.eFormCaseTemplateBase" Version="10.0.31" />
-    <PackageReference Include="Microting.ItemsPlanningBase" Version="10.0.32" />
+    <PackageReference Include="Microting.EformBackendConfigurationBase" Version="10.0.41" />
+    <PackageReference Include="Microting.eFormCaseTemplateBase" Version="10.0.32" />
+    <PackageReference Include="Microting.ItemsPlanningBase" Version="10.0.33" />
     <PackageReference Include="Microting.WindowsService.BasePn" Version="2.0.0" />
     <PackageReference Include="QuestPDF" Version="2026.5.0" />
     <PackageReference Include="SendGrid" Version="9.29.3" />
     <PackageReference Include="Sentry" Version="6.6.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="3.119.4" />
     <PackageReference Include="System.ComponentModel.Composition" Version="10.0.8" />
-    <PackageReference Include="Microting.eFormApi.BasePn" Version="10.0.27" />
+    <PackageReference Include="Microting.eFormApi.BasePn" Version="10.0.28" />
   </ItemGroup>
   <ItemGroup>
     <Compile Update="Resources\SharedResource.Designer.cs">
