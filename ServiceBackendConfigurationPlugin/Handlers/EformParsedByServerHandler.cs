@@ -33,6 +33,7 @@ using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Data;
 using Microting.ItemsPlanningBase.Infrastructure.Enums;
 using Rebus.Handlers;
+using ServiceBackendConfigurationPlugin.Infrastructure;
 using ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 using ServiceBackendConfigurationPlugin.Messages;
 
@@ -140,7 +141,17 @@ public class EformParsedByServerHandler(
 
                     if (planning.RepeatType == RepeatType.Month)
                     {
-                        if (planning.DayOfMonth != null)
+                        if (areaRulePlanning.RepeatOrdinalWeek is > 0)
+                        {
+                            var target = new DateTime(now.Year, now.Month, 1, 0, 0, 0).AddMonths(planning.RepeatEvery);
+                            var snapped = RecurrenceHelper.NthWeekdayOfMonth(
+                                target.Year, target.Month, areaRulePlanning.RepeatOrdinalWeek.Value, areaRulePlanning.DayOfWeek)
+                                ?? RecurrenceHelper.NthWeekdayOfMonth(target.Year, target.Month, 4, areaRulePlanning.DayOfWeek)
+                                ?? RecurrenceHelper.NthWeekdayOfMonth(target.Year, target.Month, 3, areaRulePlanning.DayOfWeek);
+                            planning.NextExecutionTime = new DateTime(snapped!.Value.Year, snapped.Value.Month, snapped.Value.Day, 0, 0, 0);
+                            await planning.Update(itemsPlanningPnDbContext);
+                        }
+                        else if (planning.DayOfMonth != null)
                         {
                             if (planning.DayOfMonth == 0)
                             {
@@ -165,6 +176,15 @@ public class EformParsedByServerHandler(
                 {
                     Console.WriteLine($"info: We did not find a compliance for {planningCaseSite.PlanningId}, so we create one");
                     var deadLine = (DateTime)planning.NextExecutionTime!;
+                    if (areaRulePlanning.RepeatOrdinalWeek is > 0)
+                    {
+                        var snappedDeadLine = RecurrenceHelper.NthWeekdayOfMonth(
+                            deadLine.Year, deadLine.Month, areaRulePlanning.RepeatOrdinalWeek.Value, areaRulePlanning.DayOfWeek);
+                        if (snappedDeadLine != null)
+                        {
+                            deadLine = snappedDeadLine.Value;
+                        }
+                    }
                     try
                     {
                         var compliance = new Compliance

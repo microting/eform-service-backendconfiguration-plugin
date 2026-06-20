@@ -23,6 +23,7 @@ SOFTWARE.
 */
 
 using Rebus.Bus;
+using ServiceBackendConfigurationPlugin.Infrastructure;
 
 namespace ServiceBackendConfigurationPlugin.Handlers;
 
@@ -286,6 +287,15 @@ public class EFormCompletedHandler(
 
 
                 var deadline = ((DateTime) planning.NextExecutionTime);
+                var arpForDeadline = await backendConfigurationPnDbContext.AreaRulePlannings
+                    .Where(x => x.ItemPlanningId == planningCaseSite.PlanningId)
+                    .AsNoTracking().FirstOrDefaultAsync();
+                if (arpForDeadline?.RepeatOrdinalWeek is > 0)
+                {
+                    var snapped = RecurrenceHelper.NthWeekdayOfMonth(
+                        deadline.Year, deadline.Month, arpForDeadline.RepeatOrdinalWeek.Value, arpForDeadline.DayOfWeek);
+                    if (snapped != null) deadline = snapped.Value;
+                }
                 Console.WriteLine($"info: Deadline: {deadline}");
                 // backendConfigurationPnDbContext.Database.Log = Console.Write;
 
