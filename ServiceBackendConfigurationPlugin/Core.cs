@@ -41,6 +41,7 @@ namespace ServiceBackendConfigurationPlugin;
 
 using Castle.MicroKernel.Registration;
 using Castle.Windsor;
+using Infrastructure;
 using Infrastructure.Helpers;
 using Installers;
 using Messages;
@@ -404,11 +405,18 @@ public class Core : ISdkEventHandler
 
                     try
                     {
+                        var deadline = (DateTime) planning.NextExecutionTime!;
+                        if (areaRulePlanning.RepeatOrdinalWeek is > 0)
+                        {
+                            var snapped = RecurrenceHelper.NthWeekdayOfMonth(
+                                deadline.Year, deadline.Month, areaRulePlanning.RepeatOrdinalWeek.Value, areaRulePlanning.DayOfWeek);
+                            if (snapped != null) deadline = snapped.Value;
+                        }
                         var compliance = new Compliance
                         {
                             PlanningId = planning.Id,
                             AreaId = areaRulePlanning.AreaId,
-                            Deadline = (DateTime) planning.NextExecutionTime!,
+                            Deadline = new DateTime(deadline.Year, deadline.Month, deadline.Day, 0, 0, 0),
                             StartDate = (DateTime) planning.LastExecutedTime!,
                             MicrotingSdkCaseId = planningCase.MicrotingSdkCaseId,
                             MicrotingSdkeFormId = planning.RelatedEFormId,
