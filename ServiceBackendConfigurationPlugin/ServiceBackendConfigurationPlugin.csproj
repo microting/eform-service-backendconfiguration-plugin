@@ -25,7 +25,7 @@
     <PackageReference Include="QuestPDF" Version="2026.7.0" />
     <PackageReference Include="SendGrid" Version="9.29.3" />
     <PackageReference Include="Sentry" Version="6.6.0" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.148.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.150.1" />
     <PackageReference Include="System.ComponentModel.Composition" Version="10.0.9" />
     <PackageReference Include="Microting.eFormApi.BasePn" Version="10.0.29" />
   </ItemGroup>
