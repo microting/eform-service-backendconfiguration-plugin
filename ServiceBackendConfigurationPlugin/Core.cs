@@ -295,6 +295,7 @@ public class Core : ISdkEventHandler
                     , new RebusInstaller(dbPrefix, connectionString, _maxParallelism, _numberOfWorkers, rabbitMqUser, rabbitMqPassword, rabbitmqHost)
                 );
                 _container.Register(Component.For<SearchListJob>());
+                _container.Register(Component.For<AdhocReminderJob>());
                 _container.Register(Component.For<DriveChannelRenewalJob>());
                 _container.Register(Component.For<DriveTokenKeepaliveJob>());
                 _container.Register(Component.For<DriveReconcileJob>());
@@ -467,9 +468,32 @@ public class Core : ISdkEventHandler
     {
         var job = _container.Resolve<SearchListJob>();
 
+        // Each hourly job gets its own try/catch (same pattern as the Drive
+        // daily chain below) so a failure in one doesn't sink the other —
+        // and doesn't escape the async void timer callback.
         async void Callback(object x)
         {
-            await job.Execute();
+            try
+            {
+                await job.Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: SearchListJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            // Adhoc reminder evaluation + FCM push delivery piggybacks on
+            // the same hourly timer (feature-flag gated inside the job).
+            try
+            {
+                await _container.Resolve<AdhocReminderJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: AdhocReminderJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
         }
 
         _scheduleTimer = new Timer(Callback, null, TimeSpan.Zero, TimeSpan.FromMinutes(60));

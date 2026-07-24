@@ -14,6 +14,11 @@ COPY eform-service-items-planning-plugin ./eform-service-items-planning-plugin
 COPY eform-service-workflow-plugin ./eform-service-workflow-plugin
 COPY eform-service-timeplanning-plugin ./eform-service-timeplanning-plugin
 COPY eform-service-backendconfiguration-plugin ./eform-service-backendconfiguration-plugin
+# The host must ship Microsoft.Bcl.AsyncInterfaces >= 6.0.0.0: MEF loads plugin assemblies
+# into the default load context, where dependencies resolve against the host's closure first.
+# FirebaseAdmin -> Google.Api.Gax references AsyncInterfaces 6.0.0.0, but the host only pulls
+# 5.0.0.0 transitively (System.Private.ServiceModel 4.10.3), which fails with 0x80131040.
+RUN dotnet add eform-debian-service/MicrotingService/MicrotingService.csproj package Microsoft.Bcl.AsyncInterfaces --version 10.0.10
 RUN dotnet publish -o out /p:Version=$GITVERSION --runtime linux-x64 --configuration Release eform-debian-service
 RUN dotnet publish -o out/Plugins/ServiceItemsPlanningPlugin /p:Version=$PLUGINVERSION --runtime linux-x64 --configuration Release eform-service-items-planning-plugin
 RUN dotnet publish -o out/Plugins/ServiceWorkflowPlugin /p:Version=$PLUGIN3VERSION --runtime linux-x64 --configuration Release eform-service-workflow-plugin
