@@ -313,5 +313,130 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 AdhocReminderEvaluator.DueDeadlineReminderInstant(task, Monday.AddHours(9)),
                 Is.Null);
         }
+
+        // --- marker-write policy (ShouldWriteMarker) ---------------------
+
+        [Test]
+        public void Marker_OneShot_ZeroDeliveries_IsNotWritten()
+        {
+            Assert.Multiple(() =>
+            {
+                // Visible reminder is always one-shot...
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: false, deadlineReminderRepeat: 0,
+                        deliveredCount: 0, transientFailures: 0),
+                    Is.False);
+                // ...even when the task's DEADLINE repeat is weekdays.
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: false, deadlineReminderRepeat: 1,
+                        deliveredCount: 0, transientFailures: 0),
+                    Is.False);
+                // Deadline reminder with Repeat == 0 is one-shot too.
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: true, deadlineReminderRepeat: 0,
+                        deliveredCount: 0, transientFailures: 0),
+                    Is.False);
+            });
+        }
+
+        [Test]
+        public void Marker_OneShot_AllTokensDead_IsNotWritten()
+        {
+            // Every token purged as UNREGISTERED/invalid -> deliveredCount 0
+            // with no transient failures: same rule as having no tokens at
+            // all — the single delivery attempt must not be consumed.
+            Assert.That(
+                AdhocReminderEvaluator.ShouldWriteMarker(
+                    isDeadlineReminder: true, deadlineReminderRepeat: 0,
+                    deliveredCount: 0, transientFailures: 0),
+                Is.False);
+        }
+
+        [Test]
+        public void Marker_WeekdayRepeat_ZeroDeliveries_IsWritten()
+        {
+            // Self-heals next weekday, so today's slot may be marked done.
+            Assert.That(
+                AdhocReminderEvaluator.ShouldWriteMarker(
+                    isDeadlineReminder: true, deadlineReminderRepeat: 1,
+                    deliveredCount: 0, transientFailures: 0),
+                Is.True);
+        }
+
+        [Test]
+        public void Marker_AnyDelivery_IsWritten()
+        {
+            Assert.Multiple(() =>
+            {
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: false, deadlineReminderRepeat: 0,
+                        deliveredCount: 1, transientFailures: 0),
+                    Is.True);
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: true, deadlineReminderRepeat: 1,
+                        deliveredCount: 3, transientFailures: 0),
+                    Is.True);
+            });
+        }
+
+        [Test]
+        public void Marker_TransientFailures_AlwaysBlock()
+        {
+            Assert.Multiple(() =>
+            {
+                // Even with deliveries, a transient failure defers the marker
+                // so the stragglers retry next hour.
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: false, deadlineReminderRepeat: 0,
+                        deliveredCount: 5, transientFailures: 1),
+                    Is.False);
+                Assert.That(
+                    AdhocReminderEvaluator.ShouldWriteMarker(
+                        isDeadlineReminder: true, deadlineReminderRepeat: 1,
+                        deliveredCount: 0, transientFailures: 2),
+                    Is.False);
+            });
+        }
+
+        [Test]
+        public void Marker_OneShotRetriesHourlyUntilDelivered()
+        {
+            // Tick 1 (09:00): due, but zero live tokens -> policy says no
+            // marker; the task stays due on later ticks the same day.
+            var task = VisibleReminderTask(Monday);
+            var dueInstant = Monday.AddHours(8);
+
+            Assert.That(
+                AdhocReminderEvaluator.DueVisibleReminderInstant(task, Monday.AddHours(9)),
+                Is.EqualTo(dueInstant));
+            Assert.That(
+                AdhocReminderEvaluator.ShouldWriteMarker(
+                    isDeadlineReminder: false, deadlineReminderRepeat: 0,
+                    deliveredCount: 0, transientFailures: 0),
+                Is.False);
+
+            // Tick 2 (10:00): still due — a token registered in between now
+            // receives the reminder, and the marker gets written.
+            Assert.That(
+                AdhocReminderEvaluator.DueVisibleReminderInstant(task, Monday.AddHours(10)),
+                Is.EqualTo(dueInstant));
+            Assert.That(
+                AdhocReminderEvaluator.ShouldWriteMarker(
+                    isDeadlineReminder: false, deadlineReminderRepeat: 0,
+                    deliveredCount: 1, transientFailures: 0),
+                Is.True);
+            task.LastVisibleReminderSentAt = Monday.AddHours(10);
+
+            // Tick 3 (11:00): suppressed by the marker.
+            Assert.That(
+                AdhocReminderEvaluator.DueVisibleReminderInstant(task, Monday.AddHours(11)),
+                Is.Null);
+        }
     }
 }

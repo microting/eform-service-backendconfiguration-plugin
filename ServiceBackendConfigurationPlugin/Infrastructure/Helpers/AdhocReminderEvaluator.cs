@@ -120,6 +120,37 @@ public static class AdhocReminderEvaluator
         return IsMarkerStale(task.LastDeadlineReminderSentAt, currentInstant) ? currentInstant : null;
     }
 
+    /// <summary>
+    /// Decides whether the <c>Last*ReminderSentAt</c> marker may be written
+    /// after a send attempt.
+    ///
+    /// Any transient failure blocks the marker (whole task+kind retries next
+    /// hour). Any actual delivery writes it. With ZERO deliveries (no
+    /// registered tokens, or every token was dead and got purged) the kind
+    /// matters: a weekday-repeat deadline reminder self-heals next weekday,
+    /// so today's slot may be marked done; a ONE-SHOT reminder
+    /// (visible-from, or deadline with Repeat != 1) has a fixed instant that
+    /// never recurs — writing the marker would permanently and silently lose
+    /// the only delivery attempt, so it stays unset and the job retries
+    /// hourly until a live token exists (bounded: completed/archived tasks
+    /// drop out of the candidate query).
+    /// </summary>
+    public static bool ShouldWriteMarker(
+        bool isDeadlineReminder, int deadlineReminderRepeat, int deliveredCount, int transientFailures)
+    {
+        if (transientFailures > 0)
+        {
+            return false;
+        }
+
+        if (deliveredCount > 0)
+        {
+            return true;
+        }
+
+        return isDeadlineReminder && deadlineReminderRepeat == 1;
+    }
+
     private static bool IsMarkerStale(DateTime? lastSentAt, DateTime dueInstant)
     {
         return lastSentAt == null || lastSentAt.Value < dueInstant;

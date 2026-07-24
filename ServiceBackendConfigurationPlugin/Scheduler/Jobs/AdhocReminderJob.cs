@@ -54,11 +54,14 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// <c>ExecutionRule == 1</c> (everyone). FCM tokens come from
 /// <c>DeviceTokens</c> (WorkflowState == Created).
 ///
-/// Idempotency: the task's <c>Last*ReminderSentAt</c> marker is written only
-/// AFTER a send batch with no transient failures; a transient failure leaves
-/// the marker unset so the whole task+kind retries next hour. Per-token
-/// permanent failures (UNREGISTERED / INVALID_ARGUMENT) soft-delete that
-/// DeviceToken row and do not block the marker.
+/// Idempotency: the task's <c>Last*ReminderSentAt</c> marker is written per
+/// <see cref="AdhocReminderEvaluator.ShouldWriteMarker"/> — only after a send
+/// attempt with no transient failures, and (for one-shot reminders) only when
+/// at least one device was actually delivered to; a one-shot reminder with
+/// zero live tokens retries hourly until a token exists. Transient failures
+/// always leave the marker unset for retry next hour. Per-token permanent
+/// failures (UNREGISTERED / INVALID_ARGUMENT) soft-delete that DeviceToken
+/// row and do not by themselves block the marker.
 ///
 /// Firebase credentials (service-account JSON) load from the
 /// <c>BackendConfigurationSettings:AdhocFirebaseServiceAccountJson</c>
@@ -214,6 +217,9 @@ public class AdhocReminderJob : IJob
                 .Where(x => workerIds.Contains(x.WorkerId))
                 .ToListAsync();
 
+        var deliveredCount = 0;
+        var transientFailures = 0;
+
         if (tokens.Count > 0)
         {
             var title = string.IsNullOrWhiteSpace(task.Title) ? "Opgave" : task.Title;
@@ -252,7 +258,6 @@ public class AdhocReminderJob : IJob
                 }
             }).ToList();
 
-            var transientFailures = 0;
             for (var offset = 0; offset < messages.Count; offset += FcmBatchLimit)
             {
                 var chunk = messages.Skip(offset).Take(FcmBatchLimit).ToList();
@@ -263,6 +268,7 @@ public class AdhocReminderJob : IJob
                     var response = batch.Responses[i];
                     if (response.IsSuccess)
                     {
+                        deliveredCount++;
                         continue;
                     }
 
@@ -284,22 +290,34 @@ public class AdhocReminderJob : IJob
                     }
                 }
             }
-
-            if (transientFailures > 0)
-            {
-                // Leave the marker unset: the whole task+kind retries next
-                // hour (healthy tokens may see a duplicate — acceptable).
-                Console.WriteLine(
-                    $"warn: AdhocReminderJob - {transientFailures} transient send failure(s) " +
-                    $"for task {task.Id}; marker left unset for retry next hour");
-                return;
-            }
         }
 
-        // Marker is written after a clean batch — and also when there was
-        // nobody to notify, so a tokenless task does not re-evaluate every
-        // hour and a device registered later the same day does not receive a
-        // stale reminder.
+        var kind = isDeadlineReminder ? "deadline" : "visible";
+
+        if (transientFailures > 0)
+        {
+            // Leave the marker unset: the whole task+kind retries next
+            // hour (healthy tokens may see a duplicate — acceptable).
+            Console.WriteLine(
+                $"warn: AdhocReminderJob - {transientFailures} transient send failure(s) " +
+                $"for {kind} reminder on task {task.Id}; marker left unset for retry next hour");
+            return;
+        }
+
+        if (!AdhocReminderEvaluator.ShouldWriteMarker(
+                isDeadlineReminder, task.DeadlineReminderRepeat, deliveredCount, transientFailures))
+        {
+            // One-shot reminder with nothing delivered (no registered
+            // tokens, or every token was dead and just got purged). Its due
+            // instant never recurs, so writing the marker would silently
+            // lose the only delivery attempt — leave it unset and retry
+            // hourly until a live token exists or the task completes.
+            Console.WriteLine(
+                $"warn: AdhocReminderJob - 0 live devices for one-shot {kind} reminder " +
+                $"on task {task.Id}; marker left unset - will retry next tick");
+            return;
+        }
+
         if (isDeadlineReminder)
         {
             task.LastDeadlineReminderSentAt = now;
@@ -310,9 +328,21 @@ public class AdhocReminderJob : IJob
         }
 
         await task.Update(db);
-        Console.WriteLine(
-            $"info: AdhocReminderJob - sent {(isDeadlineReminder ? "deadline" : "visible")} " +
-            $"reminder for task {task.Id} to {tokens.Count} device(s)");
+
+        if (deliveredCount > 0)
+        {
+            Console.WriteLine(
+                $"info: AdhocReminderJob - sent {kind} reminder for task {task.Id} " +
+                $"to {deliveredCount} device(s)");
+        }
+        else
+        {
+            // Weekday-repeat with nobody reachable: today's slot is marked
+            // done (NOT delivered) — the reminder self-heals next weekday.
+            Console.WriteLine(
+                $"warn: AdhocReminderJob - 0 recipients for weekday-repeat deadline reminder " +
+                $"on task {task.Id}; today's slot marked done, next attempt next weekday");
+        }
     }
 
     private static void EnsureFirebaseApp(string serviceAccountJson)
