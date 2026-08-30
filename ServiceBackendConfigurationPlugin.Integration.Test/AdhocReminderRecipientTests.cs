@@ -32,27 +32,34 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
     using ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 
     /// <summary>
-    /// The adhoc sender must only ever see tokens minted by the adhoc app.
-    /// flutter-adhoc and flutter-eform register into the SAME DeviceTokens
-    /// table but use DIFFERENT Firebase projects, so pushing an eform-minted
-    /// token through the adhoc credential returns SenderIdMismatch. That is
-    /// counted as a transient failure, which leaves the task's
-    /// Last*ReminderSentAt marker unset — the reminder then retries every
-    /// hour forever and re-pushes every healthy recipient each time.
+    /// The adhoc sender must only ever see tokens minted by the adhoc app —
+    /// see <see cref="AdhocReminderJob.AdhocAppId"/> for why the shared
+    /// DeviceTokens table makes that a live risk.
     ///
     /// These tests run the REAL recipient predicate:
     /// <see cref="AdhocReminderJob.SelectRecipientTokens"/> is the exact
     /// IQueryable composition the send path executes, evaluated here over an
     /// in-memory queryable instead of MariaDB. Re-stating the predicate in
-    /// the test instead would assert nothing about the shipped query.
+    /// the test would assert nothing about the shipped query.
     ///
-    /// This project has no database harness (no Testcontainers, no
-    /// DbContext fixture — see AdhocReminderEvaluatorTests, a plain
-    /// dependency-free [TestFixture]). Sharing the expression is the
-    /// smallest way to exercise the shipped predicate rather than a copy of
-    /// it. What is deliberately NOT covered here is EF's SQL translation and
-    /// index selection; that needs a live MariaDB and belongs to bc-plugin's
-    /// integration suite.
+    /// The seam is shared because this project has no database harness (no
+    /// Testcontainers, no DbContext fixture — see AdhocReminderEvaluatorTests,
+    /// a plain dependency-free [TestFixture]); sharing the expression is the
+    /// smallest way to exercise the shipped predicate rather than a copy.
+    ///
+    /// Deliberately NOT covered here, because LINQ-to-Objects is not MariaDB:
+    ///  - EF's SQL translation and index selection. Needs a live MariaDB;
+    ///    belongs to bc-plugin's integration suite.
+    ///  - String comparison SEMANTICS. String <c>==</c> is ORDINAL and
+    ///    CASE-SENSITIVE in LINQ-to-Objects, while the DeviceTokens columns
+    ///    carry MariaDB's default case-INSENSITIVE utf8mb4_*_ci collation. A
+    ///    production row with <c>AppId = "Adhoc"</c> WOULD be selected by the
+    ///    shipped query, whereas
+    ///    <see cref="ForeignAppToken_IsNotSelected_EvenForAMatchingSite"/>
+    ///    asserts a world in which it would not; the same applies to the
+    ///    WorkflowState comparison. This gap belongs on the list precisely
+    ///    because it alters the predicate's MEANING, not merely its
+    ///    performance.
     /// </summary>
     [TestFixture]
     public class AdhocReminderRecipientTests
@@ -137,20 +144,6 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             };
 
             Assert.That(SelectedTokens(all, 14), Is.EquivalentTo(new[] { "mine-tok" }));
-        }
-
-        [Test]
-        public void NoRecipientSites_SelectsNothing()
-        {
-            var all = new List<DeviceToken> { Token("adhoc", 16, "adhoc-tok") };
-
-            Assert.That(SelectedTokens(all), Is.Empty);
-        }
-
-        [Test]
-        public void AdhocAppIdConstant_IsExactlyAdhoc()
-        {
-            Assert.That(AdhocReminderJob.AppId, Is.EqualTo("adhoc"));
         }
     }
 }

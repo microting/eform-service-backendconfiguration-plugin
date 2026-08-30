@@ -48,12 +48,14 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// ComplianceOverdueMovementEnabled) — exits quietly when disabled/unset.
 ///
 /// Due evaluation is delegated to <see cref="AdhocReminderEvaluator"/> in
-/// server-local time. Recipients are the task's non-removed
-/// <c>AdhocTaskAssignments</c> worker ids, widened to all non-removed
+/// server-local time. Recipients are the SDK Site ids on the task's
+/// non-removed <c>AdhocTaskAssignments</c>, widened to all non-removed
 /// <c>PropertyWorkers</c> of the task's property when
-/// <c>ExecutionRule == 1</c> (everyone). FCM tokens come from
-/// <c>DeviceTokens</c> (AppId == <see cref="AppId"/>, WorkflowState ==
-/// Created) — see <see cref="SelectRecipientTokens"/>.
+/// <c>ExecutionRule == 1</c> (everyone). Both of those columns are called
+/// <c>WorkerId</c> but hold an SDK <c>Site.Id</c>. FCM tokens come from
+/// <c>DeviceTokens</c> (AppId == <see cref="AdhocAppId"/>, WorkflowState ==
+/// Created) matched on <c>SdkSiteId</c> — see
+/// <see cref="SelectRecipientTokens"/>.
 ///
 /// Idempotency: the task's <c>Last*ReminderSentAt</c> marker is written per
 /// <see cref="AdhocReminderEvaluator.ShouldWriteMarker"/> — only after a send
@@ -63,7 +65,9 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// always leave the marker unset for retry next hour. Per-token permanent
 /// failures (UNREGISTERED / INVALID_ARGUMENT / SENDER_ID_MISMATCH)
 /// soft-delete that DeviceToken row and do not by themselves block the
-/// marker.
+/// marker — EXCEPT a batch in which EVERY response is SENDER_ID_MISMATCH,
+/// which is a credential fault rather than dead tokens and prunes nothing;
+/// see <see cref="IsCredentialFaultBatch"/>.
 ///
 /// Firebase credentials (service-account JSON) load from the
 /// <c>BackendConfigurationSettings:AdhocFirebaseServiceAccountJson</c>
@@ -89,8 +93,20 @@ public class AdhocReminderJob : IJob
     /// their tokens in different Firebase projects, so a token from any
     /// other app would return SenderIdMismatch. Filter them out here rather
     /// than discover it at send time.
+    ///
+    /// The literal "adhoc" is replicated across four repos and NOTHING
+    /// enforces that they agree — drift in any one of them silently orphans
+    /// rows while every test stays green:
+    ///  - eform-backendconfiguration-base —
+    ///    Migrations/20260830081550_DeviceTokenIdentityModel.cs, both the
+    ///    backfill (<c>COALESCE(AppId, 'adhoc')</c>) and the column DEFAULT;
+    ///  - eform-backendconfiguration-plugin — <c>AdhocAppId</c> in
+    ///    BackendConfiguration.Pn.Integration.Test/DeviceTokenRecipientSeamTests.cs,
+    ///    and the app_id the SettingsGrpcService push-token endpoint persists;
+    ///  - flutter-adhoc — the app_id the client sends when registering;
+    ///  - this constant.
     /// </summary>
-    public const string AppId = "adhoc";
+    public const string AdhocAppId = "adhoc";
 
     // FirebaseApp.Create throws on double-init; the guard makes the hourly
     // ticks (and any future co-hosted sender) initialize exactly once.
@@ -200,9 +216,21 @@ public class AdhocReminderJob : IJob
     /// <summary>
     /// Live adhoc-app device tokens owned by any of <paramref name="sdkSiteIds"/>.
     ///
-    /// The AppId predicate comes FIRST so the query matches the composite
-    /// index (AppId, SdkSiteId, WorkflowState); the old IX_DeviceTokens_WorkerId
-    /// no longer exists, so without it this table-scans.
+    /// INVARIANT — the AppId equality predicate must be PRESENT; where it
+    /// sits in the chain is irrelevant. <c>AppId</c> is the LEADING column of
+    /// <c>IX_DeviceTokens_AppId_SdkSiteId_WorkflowState</c> and the old
+    /// <c>IX_DeviceTokens_WorkerId</c> was dropped, so with AppId
+    /// unconstrained MariaDB has no usable access path — it has no index skip
+    /// scan — and this table-scans. Clause ORDER buys nothing: EF renders the
+    /// conjuncts in chain order, but the optimiser normalises the AND and
+    /// picks the access path from the predicate SET. Do not read this as a
+    /// "put the indexed column first" tuning rule; no such rule exists.
+    ///
+    /// That index lives in a DIFFERENT repo — eform-backendconfiguration-base,
+    /// <c>BackendConfigurationPnDbContext</c> plus
+    /// Migrations/20260830081550_DeviceTokenIdentityModel.cs — so this claim
+    /// can rot on a base package bump with nothing here to notice. No test in
+    /// this repo verifies it; that needs a live MariaDB.
     ///
     /// Public so <c>AdhocReminderRecipientTests</c> can run the shipped
     /// predicate itself instead of a re-stated copy of it.
@@ -211,19 +239,53 @@ public class AdhocReminderJob : IJob
         IQueryable<DeviceToken> deviceTokens, List<int> sdkSiteIds)
     {
         return deviceTokens
-            .Where(x => x.AppId == AppId)
+            .Where(x => x.AppId == AdhocAppId)
             .Where(x => x.WorkflowState == Constants.WorkflowStates.Created)
             .Where(x => sdkSiteIds.Contains(x.SdkSiteId));
+    }
+
+    /// <summary>
+    /// True when EVERY message in a send batch failed with
+    /// <see cref="MessagingErrorCode.SenderIdMismatch"/>. Each element of
+    /// <paramref name="outcomes"/> is one response's error code in batch
+    /// order, or <c>null</c> where that message succeeded.
+    ///
+    /// SenderIdMismatch has TWO causes and only one of them is about tokens:
+    ///  (a) a foreign-app token in the shared DeviceTokens table — what
+    ///      <see cref="SelectRecipientTokens"/> filters out and what the
+    ///      per-token prune is a backstop for; and
+    ///  (b) THIS sender holding the wrong credential. If
+    ///      <c>BackendConfigurationSettings:AdhocFirebaseServiceAccountJson</c>
+    ///      is ever pointed at the wrong Firebase project, every token
+    ///      mismatches — and pruning would soft-delete the tenant's ENTIRE
+    ///      adhoc DeviceTokens set in a single hourly tick.
+    ///
+    /// An all-mismatch batch is never the shape (a) predicts, so read it as
+    /// (b): prune nothing, count the sends transient so the marker stays
+    /// unset, and let the reminder retry next hour once the credential is
+    /// fixed. That is the loud-but-harmless behaviour this job had before
+    /// pruning existed.
+    /// </summary>
+    public static bool IsCredentialFaultBatch(IReadOnlyList<MessagingErrorCode?> outcomes)
+    {
+        return outcomes.Count > 0
+               && outcomes.All(x => x == MessagingErrorCode.SenderIdMismatch);
     }
 
     private static async Task SendReminderForTask(
         BackendConfigurationPnDbContext db, AdhocTaskEntity task, bool isDeadlineReminder, DateTime now)
     {
-        List<int> workerIds;
+        // PropertyWorker.WorkerId and AdhocTaskAssignment.WorkerId are both
+        // named for the worker but hold an SDK Site.Id — the same value
+        // DeviceToken.SdkSiteId holds (see Core.cs, which looks a
+        // PropertyWorker up as sdkDbContext.Sites.Single(x => x.Id ==
+        // propertyWorker.WorkerId)). Naming the local for the value it
+        // carries, not the column it came from, keeps the join below honest.
+        List<int> sdkSiteIds;
         if (task.ExecutionRule == 1)
         {
             // 1 = everyone: all workers of the task's property.
-            workerIds = await db.PropertyWorkers
+            sdkSiteIds = await db.PropertyWorkers
                 .Where(x => x.PropertyId == task.PropertyId)
                 .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                 .Select(x => x.WorkerId)
@@ -232,7 +294,7 @@ public class AdhocReminderJob : IJob
         }
         else
         {
-            workerIds = await db.AdhocTaskAssignments
+            sdkSiteIds = await db.AdhocTaskAssignments
                 .Where(x => x.AdhocTaskId == task.Id)
                 .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                 .Select(x => x.WorkerId)
@@ -240,9 +302,9 @@ public class AdhocReminderJob : IJob
                 .ToListAsync();
         }
 
-        var tokens = workerIds.Count == 0
+        var tokens = sdkSiteIds.Count == 0
             ? new List<DeviceToken>()
-            : await SelectRecipientTokens(db.DeviceTokens, workerIds).ToListAsync();
+            : await SelectRecipientTokens(db.DeviceTokens, sdkSiteIds).ToListAsync();
 
         var deliveredCount = 0;
         var transientFailures = 0;
@@ -290,34 +352,64 @@ public class AdhocReminderJob : IJob
                 var chunk = messages.Skip(offset).Take(FcmBatchLimit).ToList();
                 var batch = await FirebaseMessaging.DefaultInstance.SendEachAsync(chunk);
 
+                var outcomes = batch.Responses
+                    .Select(x => x.IsSuccess ? null : x.Exception?.MessagingErrorCode)
+                    .ToList();
+
+                if (IsCredentialFaultBatch(outcomes))
+                {
+                    var credentialFault =
+                        $"AdhocReminderJob - all {outcomes.Count} message(s) in a batch for " +
+                        $"task {task.Id} failed with SenderIdMismatch. That is a credential " +
+                        $"fault ({ServiceAccountJsonKey} pointing at the wrong Firebase " +
+                        $"project), not dead tokens: pruning NOTHING, retrying next hour.";
+                    Console.WriteLine($"fail: {credentialFault}");
+                    SentrySdk.CaptureMessage(credentialFault, SentryLevel.Error);
+                    transientFailures += outcomes.Count;
+                    continue;
+                }
+
                 for (var i = 0; i < batch.Responses.Count; i++)
                 {
-                    var response = batch.Responses[i];
-                    if (response.IsSuccess)
+                    if (batch.Responses[i].IsSuccess)
                     {
                         deliveredCount++;
                         continue;
                     }
 
+                    var errorCode = outcomes[i];
                     var deviceToken = tokens[offset + i];
-                    var errorCode = response.Exception?.MessagingErrorCode;
                     if (errorCode is MessagingErrorCode.Unregistered
-                        or MessagingErrorCode.InvalidArgument
-                        or MessagingErrorCode.SenderIdMismatch)
+                        or MessagingErrorCode.InvalidArgument)
                     {
                         // Dead token — purge so we stop sending to it.
                         // Removing it is progress, so it does not count
-                        // against the batch.
-                        //
-                        // SenderIdMismatch means the token was minted by a
-                        // different Firebase project. The AppId filter in
-                        // SelectRecipientTokens should make it unreachable;
-                        // pruning is the backstop, because the alternative
-                        // (counting it transient) leaves the marker unset and
-                        // retries this reminder hourly forever.
+                        // against the batch. Routine churn: info level.
                         Console.WriteLine(
                             $"info: AdhocReminderJob - soft-deleting dead device token " +
                             $"{deviceToken.Id} (site {deviceToken.SdkSiteId}, {errorCode})");
+                        await deviceToken.Delete(db);
+                    }
+                    else if (errorCode is MessagingErrorCode.SenderIdMismatch)
+                    {
+                        // NOT routine churn — an INVARIANT VIOLATION. The
+                        // AppId filter in SelectRecipientTokens is supposed to
+                        // make SenderIdMismatch unreachable, so getting here
+                        // means a row claims the adhoc AppId while carrying a
+                        // token minted in another Firebase project. Still
+                        // prune it — counting it transient would leave the
+                        // marker unset and retry this reminder hourly forever
+                        // — but say so loudly, because the alternative is a
+                        // silent delete indistinguishable from UNREGISTERED
+                        // churn. A batch where EVERY response mismatches never
+                        // reaches here; see IsCredentialFaultBatch.
+                        var invariantViolation =
+                            $"AdhocReminderJob - SenderIdMismatch on device token " +
+                            $"{deviceToken.Id} (site {deviceToken.SdkSiteId}) despite the " +
+                            $"AppId == '{AdhocAppId}' filter; soft-deleting it. Check the " +
+                            $"row's AppId against the Firebase project that minted it.";
+                        Console.WriteLine($"warn: {invariantViolation}");
+                        SentrySdk.CaptureMessage(invariantViolation, SentryLevel.Warning);
                         await deviceToken.Delete(db);
                     }
                     else
