@@ -72,6 +72,9 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// Firebase credentials (service-account JSON) load from the
 /// <c>BackendConfigurationSettings:AdhocFirebaseServiceAccountJson</c>
 /// PluginConfigurationValues row; when unset the job logs once and no-ops.
+/// They are applied to a FirebaseApp named <see cref="FirebaseAppName"/>,
+/// never the process-wide default app that co-hosted senders also reach for
+/// — see <see cref="EnsureAdhocMessaging"/>.
 /// </summary>
 public class AdhocReminderJob : IJob
 {
@@ -108,8 +111,16 @@ public class AdhocReminderJob : IJob
     /// </summary>
     public const string AdhocAppId = "adhoc";
 
-    // FirebaseApp.Create throws on double-init; the guard makes the hourly
-    // ticks (and any future co-hosted sender) initialize exactly once.
+    /// <summary>
+    /// Name of the FirebaseApp this job owns. Namespaced by vendor and sender
+    /// so it cannot collide with another plugin sharing MicrotingService's
+    /// load context — see <see cref="EnsureAdhocMessaging"/> for why the
+    /// unnamed default app is not an option.
+    /// </summary>
+    public const string FirebaseAppName = "microting-adhoc";
+
+    // Serialises the first tick's FirebaseApp.Create, which throws on a
+    // duplicate name; see EnsureAdhocMessaging.
     private static readonly object FirebaseInitLock = new();
 
     // "Log once + skip" latch for missing credentials; resets when the key
@@ -195,13 +206,13 @@ public class AdhocReminderJob : IJob
 
         _missingCredentialsLogged = false;
 
-        EnsureFirebaseApp(serviceAccountJson);
+        var messaging = EnsureAdhocMessaging(serviceAccountJson);
 
         foreach (var (task, isDeadline) in dueReminders)
         {
             try
             {
-                await SendReminderForTask(db, task, isDeadline, now);
+                await SendReminderForTask(db, task, isDeadline, now, messaging);
             }
             catch (Exception e)
             {
@@ -273,7 +284,8 @@ public class AdhocReminderJob : IJob
     }
 
     private static async Task SendReminderForTask(
-        BackendConfigurationPnDbContext db, AdhocTaskEntity task, bool isDeadlineReminder, DateTime now)
+        BackendConfigurationPnDbContext db, AdhocTaskEntity task, bool isDeadlineReminder, DateTime now,
+        FirebaseMessaging messaging)
     {
         // PropertyWorker.WorkerId and AdhocTaskAssignment.WorkerId are both
         // named for the worker but hold an SDK Site.Id — the same value
@@ -350,7 +362,7 @@ public class AdhocReminderJob : IJob
             for (var offset = 0; offset < messages.Count; offset += FcmBatchLimit)
             {
                 var chunk = messages.Skip(offset).Take(FcmBatchLimit).ToList();
-                var batch = await FirebaseMessaging.DefaultInstance.SendEachAsync(chunk);
+                var batch = await messaging.SendEachAsync(chunk);
 
                 var outcomes = batch.Responses
                     .Select(x => x.IsSuccess ? null : x.Exception?.MessagingErrorCode)
@@ -473,31 +485,58 @@ public class AdhocReminderJob : IJob
         }
     }
 
-    private static void EnsureFirebaseApp(string serviceAccountJson)
+    /// <summary>
+    /// The FirebaseMessaging client this job sends through, creating the job's
+    /// own <see cref="FirebaseApp"/> on the first tick.
+    ///
+    /// The app is NAMED, and must stay named. <c>FirebaseApp.DefaultInstance</c>
+    /// is a PROCESS-WIDE singleton, and MicrotingService loads every service
+    /// plugin into one shared load context (the Google.Apis version pin in
+    /// ServiceBackendConfigurationPlugin.csproj is the other consequence of
+    /// that). Microting already runs a second FCM sender on the same
+    /// FirebaseAdmin API — TimePlanning's PushNotificationService — with a
+    /// third (flutter-eform) on the way, and each authenticates to a DIFFERENT
+    /// Firebase project. Two senders both creating the default app means
+    /// whichever initialises FIRST wins, and every later one then silently
+    /// pushes through the winner's project and credential.
+    ///
+    /// Nothing surfaces that. Cross-project sends fail per token with
+    /// SenderIdMismatch, <see cref="IsCredentialFaultBatch"/> reads a whole
+    /// batch of those as a credential fault — correctly, from what it can see
+    /// — so no token is pruned, no exception escapes, and the job retries
+    /// hourly forever. Do not "simplify" this back to DefaultInstance.
+    ///
+    /// Public so AdhocFirebaseAppIsolationTests can assert on the very client
+    /// the hourly tick sends through, instead of a re-stated copy of it.
+    /// </summary>
+    public static FirebaseMessaging EnsureAdhocMessaging(string serviceAccountJson)
     {
-        if (FirebaseApp.DefaultInstance != null)
+        var app = FirebaseApp.GetInstance(FirebaseAppName);
+        if (app == null)
         {
-            return;
-        }
-
-        lock (FirebaseInitLock)
-        {
-            if (FirebaseApp.DefaultInstance != null)
+            lock (FirebaseInitLock)
             {
-                return;
+                // Re-read inside the lock. FirebaseApp.Create THROWS
+                // ArgumentException when an app of this name already exists,
+                // so a racing first tick must observe the winner's app rather
+                // than attempt a second Create; GetInstance returns null when
+                // the app is absent, which is what makes that check possible.
+                app = FirebaseApp.GetInstance(FirebaseAppName) ?? FirebaseApp.Create(
+                    new AppOptions
+                    {
+                        // CredentialFactory is the non-obsolete replacement for
+                        // GoogleCredential.FromJson; pinning the generic to
+                        // ServiceAccountCredential also fails fast (into the job's
+                        // try/catch + Sentry) if the configured JSON is not a
+                        // service-account key.
+                        Credential = CredentialFactory
+                            .FromJson<ServiceAccountCredential>(serviceAccountJson)
+                            .ToGoogleCredential()
+                    },
+                    FirebaseAppName);
             }
-
-            FirebaseApp.Create(new AppOptions
-            {
-                // CredentialFactory is the non-obsolete replacement for
-                // GoogleCredential.FromJson; pinning the generic to
-                // ServiceAccountCredential also fails fast (into the job's
-                // try/catch + Sentry) if the configured JSON is not a
-                // service-account key.
-                Credential = CredentialFactory
-                    .FromJson<ServiceAccountCredential>(serviceAccountJson)
-                    .ToGoogleCredential()
-            });
         }
+
+        return FirebaseMessaging.GetMessaging(app);
     }
 }
