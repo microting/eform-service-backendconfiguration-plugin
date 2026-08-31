@@ -119,8 +119,8 @@ public class AdhocReminderJob : IJob
     /// </summary>
     public const string FirebaseAppName = "microting-adhoc";
 
-    // Serialises the first tick's FirebaseApp.Create, which throws on a
-    // duplicate name; see EnsureAdhocMessaging.
+    // Serialises the first tick's FirebaseApp.Create; see
+    // EnsureAdhocMessaging for why that call must happen at most once.
     private static readonly object FirebaseInitLock = new();
 
     // "Log once + skip" latch for missing credentials; resets when the key
@@ -212,7 +212,7 @@ public class AdhocReminderJob : IJob
         {
             try
             {
-                await SendReminderForTask(db, task, isDeadline, now, messaging);
+                await SendReminderForTask(db, messaging, task, isDeadline, now);
             }
             catch (Exception e)
             {
@@ -284,8 +284,8 @@ public class AdhocReminderJob : IJob
     }
 
     private static async Task SendReminderForTask(
-        BackendConfigurationPnDbContext db, AdhocTaskEntity task, bool isDeadlineReminder, DateTime now,
-        FirebaseMessaging messaging)
+        BackendConfigurationPnDbContext db, FirebaseMessaging messaging,
+        AdhocTaskEntity task, bool isDeadlineReminder, DateTime now)
     {
         // PropertyWorker.WorkerId and AdhocTaskAssignment.WorkerId are both
         // named for the worker but hold an SDK Site.Id — the same value
@@ -516,24 +516,28 @@ public class AdhocReminderJob : IJob
         {
             lock (FirebaseInitLock)
             {
-                // Re-read inside the lock. FirebaseApp.Create THROWS
+                // Re-read inside the lock: FirebaseApp.Create THROWS
                 // ArgumentException when an app of this name already exists,
                 // so a racing first tick must observe the winner's app rather
-                // than attempt a second Create; GetInstance returns null when
-                // the app is absent, which is what makes that check possible.
-                app = FirebaseApp.GetInstance(FirebaseAppName) ?? FirebaseApp.Create(
-                    new AppOptions
+                // than attempt a second Create. GetInstance returns null for
+                // an absent app, which is what makes that check possible.
+                app = FirebaseApp.GetInstance(FirebaseAppName);
+                if (app == null)
+                {
+                    var options = new AppOptions
                     {
-                        // CredentialFactory is the non-obsolete replacement for
-                        // GoogleCredential.FromJson; pinning the generic to
-                        // ServiceAccountCredential also fails fast (into the job's
-                        // try/catch + Sentry) if the configured JSON is not a
-                        // service-account key.
+                        // CredentialFactory is the non-obsolete replacement
+                        // for GoogleCredential.FromJson; pinning the generic
+                        // to ServiceAccountCredential also fails fast (into
+                        // the job's try/catch + Sentry) if the configured
+                        // JSON is not a service-account key.
                         Credential = CredentialFactory
                             .FromJson<ServiceAccountCredential>(serviceAccountJson)
                             .ToGoogleCredential()
-                    },
-                    FirebaseAppName);
+                    };
+
+                    app = FirebaseApp.Create(options, FirebaseAppName);
+                }
             }
         }
 

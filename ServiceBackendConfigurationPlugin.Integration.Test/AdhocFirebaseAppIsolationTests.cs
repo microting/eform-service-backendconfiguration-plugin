@@ -35,22 +35,14 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
     using ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 
     /// <summary>
-    /// <see cref="FirebaseApp.DefaultInstance"/> is a PROCESS-WIDE singleton.
-    /// MicrotingService loads every service plugin into one load context (see
-    /// the Google.Apis pin in ServiceBackendConfigurationPlugin.csproj), and
-    /// Microting already has a second FCM sender using the identical unnamed
-    /// pattern (TimePlanning's PushNotificationService) with a third
-    /// (flutter-eform) on the way. If two senders both create the DEFAULT app,
-    /// whichever runs first wins and every later sender silently pushes
-    /// through the FIRST one's Firebase project.
-    ///
-    /// That failure is invisible by construction: different projects mean
-    /// every token comes back SenderIdMismatch, which
-    /// <see cref="AdhocReminderJob.IsCredentialFaultBatch"/> reads (correctly,
-    /// for what it can see) as a credential fault — so nothing is pruned,
-    /// nothing throws, and the job retries forever. No crash, no dead tokens,
-    /// no signal. The only defence is that this job never touches the default
-    /// app at all.
+    /// Why this job must never touch <see cref="FirebaseApp.DefaultInstance"/>
+    /// is documented once, next to the code that must not regress:
+    /// <see cref="AdhocReminderJob.EnsureAdhocMessaging"/>. The short version —
+    /// the default app is a PROCESS-WIDE singleton shared by every service
+    /// plugin MicrotingService loads, a second FCM sender (TimePlanning's
+    /// PushNotificationService) already claims it, and a collision sends this
+    /// job's pushes through the other project with no crash, no dead tokens
+    /// and no signal. The only defence is never touching the default app.
     ///
     /// These tests drive the shipped <see cref="AdhocReminderJob"/> entry
     /// point that the hourly tick itself calls, over real FirebaseAdmin
@@ -80,14 +72,15 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 
         // FirebaseApp instances are process-wide and outlive a test; leaving
         // one behind would make the next Create throw and would leak one
-        // test's credential into the next.
+        // test's credential into the next. The default app is reset too
+        // because AForeignSenderOwningTheDefaultApp creates one.
         [SetUp]
-        public void ResetBefore() => DeleteEveryAppThisFixtureCreates();
+        public void ResetBefore() => ResetFirebaseApps();
 
         [TearDown]
-        public void ResetAfter() => DeleteEveryAppThisFixtureCreates();
+        public void ResetAfter() => ResetFirebaseApps();
 
-        private static void DeleteEveryAppThisFixtureCreates()
+        private static void ResetFirebaseApps()
         {
             FirebaseApp.GetInstance(AdhocReminderJob.FirebaseAppName)?.Delete();
             FirebaseApp.DefaultInstance?.Delete();
@@ -96,7 +89,10 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         [Test]
         public void TheAppIsNamed_AndTheProcessWideDefaultIsLeftUntouched()
         {
-            Assume.That(FirebaseApp.DefaultInstance, Is.Null,
+            // Assert, not Assume: an Assume failure reports as Inconclusive,
+            // which would let a leaked app from a previous test silently skip
+            // the one test that proves the default app is left alone.
+            Assert.That(FirebaseApp.DefaultInstance, Is.Null,
                 "precondition: no default app exists at the start of this test");
 
             var messaging = AdhocReminderJob.EnsureAdhocMessaging(ServiceAccountJson(AdhocProjectId));
@@ -125,7 +121,8 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                     .FromJson<ServiceAccountCredential>(ServiceAccountJson(ForeignProjectId))
                     .ToGoogleCredential()
             });
-            Assume.That(FirebaseApp.DefaultInstance, Is.Not.Null);
+            Assert.That(FirebaseApp.DefaultInstance, Is.Not.Null,
+                "arrange: the foreign sender must actually own the default app");
 
             var messaging = AdhocReminderJob.EnsureAdhocMessaging(ServiceAccountJson(AdhocProjectId));
 
@@ -148,10 +145,9 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var json = ServiceAccountJson(AdhocProjectId);
 
             var first = AdhocReminderJob.EnsureAdhocMessaging(json);
-            // FirebaseApp.Create(options, name) throws ArgumentException if an
-            // app with that name already exists, so every hour after the first
-            // depends on the guard reading GetInstance(name) rather than
-            // DefaultInstance.
+            // Create throws on a duplicate name, so every tick after the
+            // first depends on the guard reading GetInstance(FirebaseAppName)
+            // rather than DefaultInstance.
             var second = AdhocReminderJob.EnsureAdhocMessaging(json);
 
             Assert.That(second, Is.SameAs(first));
