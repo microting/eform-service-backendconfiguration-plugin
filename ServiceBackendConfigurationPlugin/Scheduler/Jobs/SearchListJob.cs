@@ -840,89 +840,161 @@ public class SearchListJob : IJob
             }
             case 18:
             {
-
-                var brokenPlannings = await _itemsPlanningPnDbContext.Plannings
-                    .Where(x => x.ShowExpireDate == false)
-                    .Where(x => x.Enabled)
-                    .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed).ToListAsync();
-                // Log.LogEvent("SearchListJob.Task: SearchListJob.Execute got called at 5:00 - Documents");
-                var property = await _backendConfigurationDbContext.Properties
-                    .Where(x => x.MainMailAddress != null && x.MainMailAddress != "")
-                    .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed).FirstOrDefaultAsync();
-
-                if (property == null)
+                // ShowExpireDate is a *display* flag on the items-planning Planning - see
+                // ServiceItemsPlanningPlugin.Handlers.ItemCaseCreateHandler, which reads it to decide
+                // whether an expiry is stamped on the deployed case. What `ShowExpireDate == false` was
+                // ever meant to signal *here* is recorded nowhere in the codebase, and whether this job
+                // should delete anything at all is an open product question (issue #1262). Until that is
+                // answered the job keeps its existing shape, with two guards added: plannings owned by a
+                // live AreaRulePlanning are never touched, and a failure no longer deletes.
+                try
                 {
-                    return;
-                }
-                //
-                // var caseTemplateDbContext = _caseTemplateDbContextHelper.GetDbContext();
-                var sendGridKey =
-                    _baseDbContext.ConfigurationValues.Single(x => x.Id == "EmailSettings:SendGridKey");
-                //
+                    // AsNoTracking is load bearing. Planning.Delete (PnBase) mutates the entity and
+                    // calls SaveChangesAsync on this shared context directly, so a tracked candidate
+                    // whose save was rejected would stay tracked as Modified and be bundled into - and
+                    // break - the save of every later planning in the loop. Candidates are read
+                    // detached; the loop below re-fetches the one planning it is about to delete.
+                    var candidatePlannings = await _itemsPlanningPnDbContext.Plannings
+                        .AsNoTracking()
+                        .Where(x => x.ShowExpireDate == false)
+                        .Where(x => x.Enabled)
+                        .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed).ToListAsync();
 
+                    // The items-planning and backend-configuration contexts address separate databases,
+                    // so ownership cannot be expressed as a LINQ join. PlanningOwnershipHelper resolves
+                    // it with a second, batched query against AreaRulePlannings instead.
+                    var brokenPlannings = await PlanningOwnershipHelper
+                        .ExcludeBackendConfigurationOwnedAsync(candidatePlannings, _backendConfigurationDbContext)
+                        .ConfigureAwait(false);
+
+                    var backendConfigurationOwnedCount = candidatePlannings.Count - brokenPlannings.Count;
+                    if (backendConfigurationOwnedCount > 0)
+                    {
+                        Log.LogEvent(
+                            $"info: SearchListJob.Task: Skipped {backendConfigurationOwnedCount} planning(s) with ShowExpireDate set to false, because they are owned by a live AreaRulePlanning.");
+                    }
+
+                    // Log.LogEvent("SearchListJob.Task: SearchListJob.Execute got called at 5:00 - Documents");
+                    var property = await _backendConfigurationDbContext.Properties
+                        .Where(x => x.MainMailAddress != null && x.MainMailAddress != "")
+                        .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed).FirstOrDefaultAsync();
+
+                    if (property == null)
+                    {
+                        return;
+                    }
                     //
-                var fromEmailAddress = new EmailAddress("no-reply@microting.com",
-                    $"Planning ShowExpireDate set to false: {customerNo}");
-                var toEmailAddress = new List<EmailAddress>();
-                // if (!string.IsNullOrEmpty(property.MainMailAddress))
-                // {
-                //     toEmailAddress.AddRange(
-                //         property.MainMailAddress.Split(";").Select(s => new EmailAddress(s)));
-                // }
-                toEmailAddress.Add(new EmailAddress("rm@microting.com"));
+                    // var caseTemplateDbContext = _caseTemplateDbContextHelper.GetDbContext();
+                    var sendGridKey =
+                        _baseDbContext.ConfigurationValues.Single(x => x.Id == "EmailSettings:SendGridKey");
+                    //
 
-                if (toEmailAddress.Count > 0 && !string.IsNullOrEmpty(sendGridKey.Value) && brokenPlannings.Count > 0)
-                {
-                    var sendGridClient = new SendGridClient(sendGridKey.Value);
+                        //
+                    var fromEmailAddress = new EmailAddress("no-reply@microting.com",
+                        $"Planning ShowExpireDate set to false: {customerNo}");
+                    var toEmailAddress = new List<EmailAddress>();
+                    // if (!string.IsNullOrEmpty(property.MainMailAddress))
+                    // {
+                    //     toEmailAddress.AddRange(
+                    //         property.MainMailAddress.Split(";").Select(s => new EmailAddress(s)));
+                    // }
+                    toEmailAddress.Add(new EmailAddress("rm@microting.com"));
 
-                    var stringBuilder = new StringBuilder();
-                    stringBuilder.Append("<html><body>");
-                    foreach (var brokenPlanning in brokenPlannings)
+                    if (toEmailAddress.Count > 0 && !string.IsNullOrEmpty(sendGridKey.Value) && brokenPlannings.Count > 0)
                     {
-                        try
+                        var sendGridClient = new SendGridClient(sendGridKey.Value);
+
+                        var stringBuilder = new StringBuilder();
+                        stringBuilder.Append("<html><body>");
+
+                        var brokenPlanningIds = brokenPlannings.Select(x => x.Id).Distinct().ToList();
+
+                        // Every name in one batched pass instead of a query per planning inside the
+                        // loop, which keeps the round trip count at roughly what it was before the
+                        // per-planning re-fetch was introduced. First translation per planning wins,
+                        // which is what the previous unordered FirstAsync resolved to in practice.
+                        var planningNames = new Dictionary<int, string>();
+                        foreach (var idBatch in PlanningOwnershipHelper.BatchPlanningIds(brokenPlanningIds))
                         {
-                            var planningTranslation = await _itemsPlanningPnDbContext.PlanningNameTranslation
-                                .FirstAsync(x => x.PlanningId == brokenPlanning.Id);
-                            stringBuilder.Append(
-                                $"<p>Planning with id: {brokenPlanning.Id} and name: {planningTranslation.Name} has ShowExpireDate set to false</p>");
-                            await brokenPlanning.Delete(_itemsPlanningPnDbContext).ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                            await brokenPlanning.Delete(_itemsPlanningPnDbContext).ConfigureAwait(false);
-                            var planningCaseSite = await _itemsPlanningPnDbContext.PlanningCaseSites
-                                .FirstOrDefaultAsync(x => x.PlanningId == brokenPlanning.Id);
-                            if (planningCaseSite != null)
+                            var translations = await _itemsPlanningPnDbContext.PlanningNameTranslation
+                                .AsNoTracking()
+                                .Where(x => idBatch.Contains(x.PlanningId))
+                                .OrderBy(x => x.Id)
+                                .Select(x => new { x.PlanningId, x.Name })
+                                .ToListAsync();
+                            foreach (var translation in translations)
                             {
-                                var planningSites = await _itemsPlanningPnDbContext.PlanningSites
-                                    .Where(x => x.PlanningId == brokenPlanning.Id).ToListAsync();
-                                if (!planningSites.Any())
-                                {
-                                    var planningCases = await _itemsPlanningPnDbContext.PlanningCases
-                                        .Where(x => x.PlanningId == brokenPlanning.Id).ToListAsync();
-                                    if (!planningCases.Any())
-                                    {
-
-                                    }
-                                }
+                                planningNames.TryAdd(translation.PlanningId, translation.Name);
                             }
+                        }
+
+                        var sweepResults = await PlanningOwnershipHelper.ProcessPlanningsIndividuallyAsync(
+                            brokenPlanningIds,
+                            async planningId =>
+                            {
+                                if (!planningNames.TryGetValue(planningId, out var planningName))
+                                {
+                                    // Same guard the previous per-planning FirstAsync gave us: a
+                                    // planning we cannot even name is not one we should destroy.
+                                    throw new InvalidOperationException(
+                                        $"No PlanningNameTranslation row found for planning with id: {planningId}.");
+                                }
+
+                                // Fetched fresh, one at a time, so the only planning tracked by the
+                                // shared context is the one being deleted right now.
+                                var planning = await _itemsPlanningPnDbContext.Plannings
+                                    .FirstOrDefaultAsync(x => x.Id == planningId);
+                                if (planning == null)
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Planning with id: {planningId} could not be loaded for deletion.");
+                                }
+
+                                await planning.Delete(_itemsPlanningPnDbContext).ConfigureAwait(false);
+                                return planningName;
+                            },
+                            () => _itemsPlanningPnDbContext.ChangeTracker.Clear())
+                            .ConfigureAwait(false);
+
+                        foreach (var sweepResult in sweepResults)
+                        {
+                            if (sweepResult.Succeeded)
+                            {
+                                stringBuilder.Append(
+                                    $"<p>Planning with id: {sweepResult.PlanningId} and name: {sweepResult.PlanningName} has ShowExpireDate set to false</p>");
+                                continue;
+                            }
+
+                            // Deliberately no delete here. A planning we could not process is not a
+                            // planning we should destroy.
+                            Log.LogException(
+                                $"SearchListJob.Task: case 18 - planning with id: {sweepResult.PlanningId} could not be processed and was NOT deleted. {sweepResult.FailureException.Message}");
+                            SentrySdk.CaptureException(sweepResult.FailureException);
                             stringBuilder.Append(
-                                $"<p>Planning with id: {brokenPlanning.Id} has ShowExpireDate set to false</p>");
+                                $"<p>Planning with id: {sweepResult.PlanningId} has ShowExpireDate set to false and could not be processed (not deleted): {sweepResult.FailureException.Message}</p>");
+                        }
+
+                        stringBuilder.Append("</body></html>");
+
+                        var msg = MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
+                            toEmailAddress,
+                            $"Planning ShowExpireDate set to false: {customerNo}", null, stringBuilder.ToString());
+
+                        var responseMessage = await sendGridClient.SendEmailAsync(msg);
+                        if ((int) responseMessage.StatusCode < 200 ||
+                            (int) responseMessage.StatusCode >= 300)
+                        {
+                            throw new Exception($"Status: {responseMessage.StatusCode}");
                         }
                     }
-
-                    stringBuilder.Append("</body></html>");
-
-                    var msg = MailHelper.CreateSingleEmailToMultipleRecipients(fromEmailAddress,
-                        toEmailAddress,
-                        $"Planning ShowExpireDate set to false: {customerNo}", null, stringBuilder.ToString());
-
-                    var responseMessage = await sendGridClient.SendEmailAsync(msg);
-                    if ((int) responseMessage.StatusCode < 200 ||
-                        (int) responseMessage.StatusCode >= 300)
-                    {
-                        throw new Exception($"Status: {responseMessage.StatusCode}");
-                    }
+                }
+                catch (Exception caseException)
+                {
+                    // The timer callback in Core.cs is `async void`, so anything escaping this case
+                    // would surface as an unhandled exception on the thread pool.
+                    Log.LogException(
+                        $"SearchListJob.Task: case 18 (ShowExpireDate sweep) failed: {caseException.Message}");
+                    SentrySdk.CaptureException(caseException);
                 }
             }
                 break;
