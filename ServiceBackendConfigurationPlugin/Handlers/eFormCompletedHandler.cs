@@ -201,53 +201,10 @@ public class EFormCompletedHandler(
 
             if (planning.RepeatType == RepeatType.Day && planning.RepeatEvery == 0)
             {
-                var areaRulePlanning = await
-                    backendConfigurationPnDbContext.AreaRulePlannings.FirstOrDefaultAsync(x =>
-                        x.ItemPlanningId == planning.Id);
-                if (areaRulePlanning == null)
-                {
-                    return;
-                }
-                var checkListTranslation = await sdkDbContext.CheckListTranslations.AsNoTracking().FirstAsync(x =>
-                    x.Text == "25.01 Registrer produkter" && x.WorkflowState != Constants.WorkflowStates.Removed);
-                var areaRule =
-                    await backendConfigurationPnDbContext.AreaRules.Where(x =>
-                            x.Id == areaRulePlanning.AreaRuleId)
-                        .Include(x => x.Area)
-                        .Include(x => x.Property)
-                        .Include(x => x.AreaRuleTranslations)
-                        .FirstOrDefaultAsync();
-                if (areaRule == null)
-                {
-                    return;
-                }
-                if (planningCaseSite.MicrotingSdkeFormId == checkListTranslation.CheckListId)
-                {
-                    // ChemicalCaseCompletedHandler will handle this case
-                    await bus.SendLocal(new ChemicalCaseCompleted(message.CaseId, message.MicrotingUId, message.CheckId,
-                        message.SiteUId));
-                }
-                else
-                {
-                    checkListTranslation = await sdkDbContext.CheckListTranslations.AsNoTracking().FirstAsync(x =>
-                        x.Text == "25.02 Vis kemisk produkt");
-                    if (planningCaseSite.MicrotingSdkeFormId == checkListTranslation.CheckListId)
-                    {
-                        // ChemicalCaseCompletedHandler will handle this case
-                        await bus.SendLocal(new ChemicalCaseCompleted(message.CaseId, message.MicrotingUId, message.CheckId,
-                            message.SiteUId));
-                    }
-                    else
-                    {
-                        if (areaRule.SecondaryeFormId != 0 && (areaRule.SecondaryeFormName == "Morgenrundtur" || areaRule.SecondaryeFormName == "Morning tour"))
-                        {
-                            // Disabling this for now, as it is not used
-                            // MorningTourCaseCompletedHandler will handle this case
-                            //await _bus.SendLocal(new MorningTourCaseCompleted(message.CaseId, message.MicrotingUId, message.CheckId,
-                            //    message.SiteUId));
-                        }
-                    }
-                }
+                // Non-repeating day plannings only ever dispatched the legacy
+                // chemical 25.01/25.02 flow (removed, flutter-chemistry spec §12);
+                // the morning-tour dispatch that also lived here was disabled.
+                return;
             }
             else
             {

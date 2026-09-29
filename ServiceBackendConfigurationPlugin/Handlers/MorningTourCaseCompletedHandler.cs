@@ -71,8 +71,6 @@ public class MorningTourCaseCompletedHandler(
         var areaRulePlanning = await
             backendConfigurationPnDbContext.AreaRulePlannings.FirstOrDefaultAsync(x =>
                 x.ItemPlanningId == planning.Id);
-        // var checkListTranslation = await sdkDbContext.CheckListTranslations.FirstAsync(x =>
-            // x.Text == "25.01 Registrer produkter" && x.WorkflowState != Constants.WorkflowStates.Removed);
         var areaRule =
             await backendConfigurationPnDbContext.AreaRules.Where(x =>
                     x.Id == areaRulePlanning.AreaRuleId)

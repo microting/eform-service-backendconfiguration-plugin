@@ -306,14 +306,6 @@ public class FloatingLayerCaseCompletedHandler(
             //             Status = "not-sent"
             //         };
             //         await email.Create(backendConfigurationDbContext).ConfigureAwait(false);
-            //
-            //         var emailAttachment = new EmailAttachment
-            //         {
-            //             EmailId = email.Id,
-            //             CidName = "eform-logo",
-            //             ResourceName = "KemiKontrol_rapport_1.0_Libre_html_5d7c0d01f9da8102.png"
-            //         };
-            //         await emailAttachment.Create(backendConfigurationDbContext).ConfigureAwait(false);
             //     }
             // } catch (Exception e) {
             //     Console.WriteLine(e.Message);
