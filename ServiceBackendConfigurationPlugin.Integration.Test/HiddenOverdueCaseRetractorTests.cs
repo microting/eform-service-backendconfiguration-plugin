@@ -164,6 +164,16 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             Assert.That(Selected(compliances, Case(9), Case(10)), Is.EquivalentTo(new[] { 9 }));
         }
 
+        [TestCase(null, true)]
+        [TestCase(2_000_000_000, true)]
+        [TestCase(2_000_012_345, true)]
+        [TestCase(1_999_999_999, false)]
+        [TestCase(123456, false)]
+        public void IsLocalOnly_SyntheticOrMissingMicrotingUid(int? microtingUid, bool expected)
+        {
+            Assert.That(HiddenOverdueCaseRetractor.IsLocalOnly(microtingUid), Is.EqualTo(expected));
+        }
+
         [Test]
         public void CaseSharedByTwoMissedRows_IsSelectedOnce()
         {

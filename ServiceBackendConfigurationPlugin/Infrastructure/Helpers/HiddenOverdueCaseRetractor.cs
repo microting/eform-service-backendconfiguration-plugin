@@ -23,6 +23,7 @@ SOFTWARE.
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -63,6 +64,14 @@ public class HiddenOverdueCaseRetractor
 {
     private const int CompletedStatus = 100;
     private const int ChunkSize = 500;
+
+    // CaseCreateLocalOnly allocates synthetic MicrotingUids from this offset up
+    // (eform-sdk SqlController.NextSyntheticMicrotingUidAsync); the cloud never saw them.
+    private const int LocalOnlyMicrotingUidOffset = 2_000_000_000;
+
+    // Cloud deletes abandoned after the timeout keep running (Core.CaseDelete cannot be
+    // cancelled); a later run must not start a second one for the same case.
+    private static readonly ConcurrentDictionary<int, byte> CloudDeletesInFlight = new();
 
     // The run shares the hourly timer with the rest of SearchListJob; whatever
     // is left when the budget is spent is picked up by the next daily run.
@@ -188,6 +197,12 @@ public class HiddenOverdueCaseRetractor
         return result;
     }
 
+    /// <summary>A case the cloud never saw: no MicrotingUid, or a synthetic one.</summary>
+    public static bool IsLocalOnly(int? microtingUid)
+    {
+        return microtingUid is null or >= LocalOnlyMicrotingUidOffset;
+    }
+
     private static bool IsLiveAndUncompleted(SdkCaseRow sdkCase)
     {
         return sdkCase.Status != CompletedStatus
@@ -289,57 +304,59 @@ public class HiddenOverdueCaseRetractor
     }
 
     /// <summary>
-    /// Mirrors the plugin's <c>EventDeployService.RetractSdkCaseAsync</c>:
-    /// best-effort cloud delete, then a guaranteed local removal.
+    /// Takes one case off the device through the SDK Core API.
+    /// <para>A calendar case is created with <c>CaseCreateLocalOnly</c> and a synthetic
+    /// MicrotingUid the cloud never saw, so it is removed locally with
+    /// <c>Core.CaseDeleteResult</c> — no cloud call, nothing that can hang.</para>
+    /// <para>A cloud-backed case is only removed when <c>Core.CaseDelete</c> confirms it
+    /// (which also removes the local row). A timeout or failure throws, leaving the case
+    /// for the next daily run rather than hiding it locally while it stays on the device.
+    /// Core.CaseDelete cannot be cancelled: on "Parsing in progress" it keeps retrying in
+    /// the background after the wait here is abandoned.</para>
     /// </summary>
     private async Task RetractCaseAsync(SdkCaseRow sdkCase)
     {
-        if (sdkCase.MicrotingUid.HasValue)
+        if (IsLocalOnly(sdkCase.MicrotingUid))
         {
-            try
+            if (!await _core.CaseDeleteResult(sdkCase.Id))
             {
-                // Bounded: on "Parsing in progress" Core.CaseDelete sleeps in a
-                // retry loop for up to hours per case. We stop waiting and fall
-                // through; CaseDeleteResult below is what removes the local row.
-                var cloudDelete = _core.CaseDelete(sdkCase.MicrotingUid.Value);
-                try
-                {
-                    await cloudDelete.WaitAsync(CloudCaseDeleteTimeout);
-                }
-                catch (TimeoutException) when (!cloudDelete.IsCompleted)
-                {
-                    Console.WriteLine(
-                        $"warning: HiddenOverdueCaseRetractor: cloud CaseDelete for case {sdkCase.Id} (microtingUid {sdkCase.MicrotingUid}) did not answer within {CloudCaseDeleteTimeout.TotalSeconds}s; falling through to the local retraction");
-                    // The abandoned task must not fault unobserved.
-                    _ = cloudDelete.ContinueWith(
-                        t => Console.WriteLine(
-                            $"warning: HiddenOverdueCaseRetractor: abandoned cloud CaseDelete for case {sdkCase.Id} faulted: {t.Exception?.GetBaseException().Message}"),
-                        CancellationToken.None,
-                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default);
-                }
+                throw new InvalidOperationException($"Core.CaseDeleteResult returned false for case {sdkCase.Id}");
             }
-            catch (Exception ex)
-            {
-                // A cloud-side failure must not stop the local retraction.
-                Console.WriteLine(
-                    $"warning: HiddenOverdueCaseRetractor: cloud CaseDelete failed for case {sdkCase.Id} (microtingUid {sdkCase.MicrotingUid}): {ex.Message}; falling back to local retraction");
-            }
+            return;
         }
 
-        // Core.CaseDelete only removes the local row when the cloud answered
-        // Success. Calendar cases are created with CaseCreateLocalOnly and a
-        // synthetic MicrotingUid the cloud never saw, so for them only
-        // Core.CaseDeleteResult (by Case.Id, no cloud round-trip) takes the
-        // case off the device.
-        var stillLive = await _sdkDbContext.Cases
-            .AsNoTracking()
-            .AnyAsync(c => c.Id == sdkCase.Id
-                           && c.WorkflowState != Constants.WorkflowStates.Removed
-                           && c.WorkflowState != Constants.WorkflowStates.Retracted);
-        if (stillLive && !await _core.CaseDeleteResult(sdkCase.Id))
+        var microtingUid = sdkCase.MicrotingUid!.Value;
+        if (!CloudDeletesInFlight.TryAdd(microtingUid, 0))
         {
-            throw new InvalidOperationException($"Core.CaseDeleteResult returned false for case {sdkCase.Id}");
+            throw new InvalidOperationException(
+                $"cloud CaseDelete for case {sdkCase.Id} (microtingUid {microtingUid}) is still running from an earlier run; left for the next run");
+        }
+
+        var cloudDelete = _core.CaseDelete(microtingUid);
+        _ = cloudDelete.ContinueWith(
+            _ => CloudDeletesInFlight.TryRemove(microtingUid, out var _),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        try
+        {
+            if (!await cloudDelete.WaitAsync(CloudCaseDeleteTimeout))
+            {
+                throw new InvalidOperationException(
+                    $"cloud CaseDelete for case {sdkCase.Id} (microtingUid {microtingUid}) was not confirmed; left for the next run");
+            }
+        }
+        catch (TimeoutException) when (!cloudDelete.IsCompleted)
+        {
+            // The abandoned task must not fault unobserved.
+            _ = cloudDelete.ContinueWith(
+                t => Console.WriteLine(
+                    $"warning: HiddenOverdueCaseRetractor: abandoned cloud CaseDelete for case {sdkCase.Id} faulted: {t.Exception?.GetBaseException().Message}"),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            throw new TimeoutException(
+                $"cloud CaseDelete for case {sdkCase.Id} (microtingUid {microtingUid}) did not answer within {CloudCaseDeleteTimeout.TotalSeconds}s; left for the next run");
         }
     }
 }
