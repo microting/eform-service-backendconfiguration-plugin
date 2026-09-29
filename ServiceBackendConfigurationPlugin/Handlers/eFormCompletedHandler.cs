@@ -42,11 +42,9 @@ public class EFormCompletedHandler(
     eFormCore.Core sdkCore,
     ItemsPlanningDbContextHelper itemsPlanningDbContextHelper,
     BackendConfigurationDbContextHelper backendConfigurationDbContextHelper,
-    ChemicalDbContextHelper chemicalDbContextHelper,
     IBus bus)
     : IHandleMessages<eFormCompleted>
 {
-    private readonly ChemicalDbContextHelper _chemicalDbContextHelper = chemicalDbContextHelper;
 
     public async Task Handle(eFormCompleted message)
     {

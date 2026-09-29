@@ -249,8 +249,6 @@ public class FloatingLayerCaseCompletedHandler(
             //     // var sendGridKey =
             //     //     _baseDbContext.ConfigurationValues.Single(x => x.Id == "EmailSettings:SendGridKey");
             //
-            //     // var fromEmailAddress = new EmailAddress("no-reply@microting.com",
-            //         // $"KemiKontrol for : {property.Name}");
             //     var toEmailAddress = new List<EmailAddress>();
             //     if (!string.IsNullOrEmpty(property.MainMailAddress))
             //     {
