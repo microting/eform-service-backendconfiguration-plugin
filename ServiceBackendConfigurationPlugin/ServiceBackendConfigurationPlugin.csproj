@@ -26,7 +26,7 @@
     <PackageReference Include="Microsoft.Extensions.DependencyModel" Version="10.0.12" />
     <PackageReference Include="Microting.eForm" Version="10.0.41" />
     <PackageReference Include="Microting.EformAngularFrontendBase" Version="10.0.40" />
-    <PackageReference Include="Microting.EformBackendConfigurationBase" Version="10.0.52" />
+    <PackageReference Include="Microting.EformBackendConfigurationBase" Version="10.0.53" />
     <PackageReference Include="Microting.eFormCaseTemplateBase" Version="10.0.38" />
     <PackageReference Include="Microting.ItemsPlanningBase" Version="10.0.40" />
     <PackageReference Include="Microting.WindowsService.BasePn" Version="2.0.0" />
@@ -88,22 +88,6 @@
     <EmbeddedResource Include="Resources\Templates\page.html" />
     <None Remove="Resources\Email.html" />
     <EmbeddedResource Include="Resources\Email.html">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </EmbeddedResource>
-    <None Remove="Resources\KemiKontrol_rapport_1.0_Libre.html" />
-    <EmbeddedResource Include="Resources\KemiKontrol_rapport_1.0_Libre.html">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </EmbeddedResource>
-    <None Remove="Resources\KemiKontrol_rapport_1.0_Libre_html_29bc21319b8001d7.png" />
-    <EmbeddedResource Include="Resources\KemiKontrol_rapport_1.0_Libre_html_29bc21319b8001d7.png">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </EmbeddedResource>
-    <None Remove="Resources\KemiKontrol_rapport_1.0_Libre_html_36e139cc671b4deb.png" />
-    <EmbeddedResource Include="Resources\KemiKontrol_rapport_1.0_Libre_html_36e139cc671b4deb.png">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </EmbeddedResource>
-    <None Remove="Resources\KemiKontrol_rapport_1.0_Libre_html_5d7c0d01f9da8102.png" />
-    <EmbeddedResource Include="Resources\KemiKontrol_rapport_1.0_Libre_html_5d7c0d01f9da8102.png">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </EmbeddedResource>
     <None Remove="Resources\Fjern-produkt.pdf" />

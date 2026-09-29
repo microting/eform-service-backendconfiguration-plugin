@@ -41,7 +41,6 @@ public sealed class RebusHandlerInstaller : IWindsorInstaller
         container.Register(Component.For<IHandleMessages<eFormRetrieved>>().ImplementedBy<EformRetrievedHandler>().LifestyleTransient());
         container.Register(Component.For<IHandleMessages<WorkOrderCaseCompleted>>().ImplementedBy<WorkOrderCaseCompletedHandler>().LifestyleTransient());
         container.Register(Component.For<IHandleMessages<OldWorkOrderCaseCompleted>>().ImplementedBy<OldWorkOrderCaseCompletedHandler>().LifestyleTransient());
-        container.Register(Component.For<IHandleMessages<ChemicalCaseCompleted>>().ImplementedBy<ChemicalCaseCompletedHandler>().LifestyleTransient());
         container.Register(Component.For<IHandleMessages<MorningTourCaseCompleted>>().ImplementedBy<MorningTourCaseCompletedHandler>().LifestyleTransient());
         container.Register(Component.For<IHandleMessages<PoolHourCaseCompleted>>().ImplementedBy<PoolHourCaseCompletedHandler>().LifestyleTransient());
         container.Register(Component.For<IHandleMessages<FloatingLayerCaseCompleted>>().ImplementedBy<FloatingLayerCaseCompletedHandler>().LifestyleTransient());
