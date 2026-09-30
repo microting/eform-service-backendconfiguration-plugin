@@ -26,6 +26,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -35,6 +36,7 @@ using Microting.eFormApi.BasePn.Infrastructure.Helpers;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Sentry;
+using SdkCase = Microting.eForm.Infrastructure.Data.Entities.Case;
 
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
@@ -110,6 +112,10 @@ public class HiddenOverdueCaseRetractor
         DateTime? DoneAt,
         string WorkflowState,
         int? SiteId);
+
+    // One projection for the selection and the re-read before each delete, so both check the same fields.
+    private static readonly Expression<Func<SdkCase, SdkCaseRow>> ToSdkCaseRow =
+        x => new SdkCaseRow(x.Id, x.MicrotingUid, x.Status, x.DoneAt, x.WorkflowState, x.SiteId);
 
     public record RetractionCandidate(
         int ComplianceId,
@@ -203,9 +209,15 @@ public class HiddenOverdueCaseRetractor
         return microtingUid is null or >= LocalOnlyMicrotingUidOffset;
     }
 
-    private static bool IsLiveAndUncompleted(SdkCaseRow sdkCase)
+    /// <summary>
+    /// Whether a case may still be retracted: it exists, is live and nobody answered it
+    /// (Status 100 or DoneAt set). Checked at selection AND again on a fresh read right
+    /// before each delete, since a worker can answer the case during the run.
+    /// </summary>
+    public static bool IsLiveAndUncompleted(SdkCaseRow sdkCase)
     {
-        return sdkCase.Status != CompletedStatus
+        return sdkCase != null
+               && sdkCase.Status != CompletedStatus
                && sdkCase.DoneAt == null
                && sdkCase.WorkflowState != Constants.WorkflowStates.Removed
                && sdkCase.WorkflowState != Constants.WorkflowStates.Retracted;
@@ -260,7 +272,7 @@ public class HiddenOverdueCaseRetractor
             var cases = await _sdkDbContext.Cases
                 .AsNoTracking()
                 .Where(x => chunk.Contains(x.Id))
-                .Select(x => new SdkCaseRow(x.Id, x.MicrotingUid, x.Status, x.DoneAt, x.WorkflowState, x.SiteId))
+                .Select(ToSdkCaseRow)
                 .ToListAsync();
             foreach (var sdkCase in cases)
             {
@@ -273,6 +285,7 @@ public class HiddenOverdueCaseRetractor
             $"info: HiddenOverdueCaseRetractor: {compliances.Count} compliances of hidden-overdue tasks reference {allCaseIds.Count} cases; {candidates.Count} live, uncompleted cases to retract");
 
         var retracted = 0;
+        var skipped = 0;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         foreach (var candidate in candidates)
         {
@@ -285,10 +298,27 @@ public class HiddenOverdueCaseRetractor
 
             try
             {
-                await RetractCaseAsync(candidate.Case);
+                // Re-read: the selection predates the loop (see IsLiveAndUncompleted).
+                var current = await _sdkDbContext.Cases
+                    .AsNoTracking()
+                    .Where(x => x.Id == candidate.Case.Id)
+                    .Select(ToSdkCaseRow)
+                    .FirstOrDefaultAsync();
+                if (!IsLiveAndUncompleted(current))
+                {
+                    skipped++;
+                    var now = current == null
+                        ? "no longer exists"
+                        : $"status {current.Status}, doneAt {current.DoneAt:yyyy-MM-dd HH:mm}, state {current.WorkflowState}";
+                    Console.WriteLine(
+                        $"info: HiddenOverdueCaseRetractor: case {candidate.Case.Id} of compliance {candidate.ComplianceId} changed during the run ({now}); not retracted");
+                    continue;
+                }
+
+                await RetractCaseAsync(current);
                 retracted++;
                 Console.WriteLine(
-                    $"info: HiddenOverdueCaseRetractor: retracted case {candidate.Case.Id} (microtingUid {candidate.Case.MicrotingUid}, site {candidate.Case.SiteId}) of compliance {candidate.ComplianceId} with deadline {candidate.Deadline:yyyy-MM-dd} ({candidate.Reason})");
+                    $"info: HiddenOverdueCaseRetractor: retracted case {current.Id} (microtingUid {current.MicrotingUid}, site {current.SiteId}) of compliance {candidate.ComplianceId} with deadline {candidate.Deadline:yyyy-MM-dd} ({candidate.Reason})");
             }
             catch (Exception ex)
             {
@@ -299,7 +329,7 @@ public class HiddenOverdueCaseRetractor
         }
 
         Log.LogEvent(
-            $"info: HiddenOverdueCaseRetractor: retracted {retracted} of {candidates.Count} cases");
+            $"info: HiddenOverdueCaseRetractor: retracted {retracted}, skipped {skipped} (answered or removed during the run), of {candidates.Count} cases");
         return retracted;
     }
 

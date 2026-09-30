@@ -87,6 +87,24 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Is.Empty);
         }
 
+        /// <summary>
+        /// The fresh read right before each delete: a case answered, removed or gone since
+        /// the selection is no longer retracted.
+        /// </summary>
+        [Test]
+        public void CaseChangedSinceTheSelection_IsNoLongerRetractable()
+        {
+            Assert.Multiple(() =>
+            {
+                Assert.That(HiddenOverdueCaseRetractor.IsLiveAndUncompleted(Case(10)), Is.True);
+                Assert.That(HiddenOverdueCaseRetractor.IsLiveAndUncompleted(Case(10, status: 100)), Is.False);
+                Assert.That(HiddenOverdueCaseRetractor.IsLiveAndUncompleted(Case(10, doneAt: Today)), Is.False);
+                Assert.That(HiddenOverdueCaseRetractor.IsLiveAndUncompleted(
+                    Case(10, workflowState: Constants.WorkflowStates.Removed)), Is.False);
+                Assert.That(HiddenOverdueCaseRetractor.IsLiveAndUncompleted(null), Is.False, "deleted meanwhile");
+            });
+        }
+
         [Test]
         public void AlreadyRemovedOrRetractedCase_IsNotSelected()
         {
