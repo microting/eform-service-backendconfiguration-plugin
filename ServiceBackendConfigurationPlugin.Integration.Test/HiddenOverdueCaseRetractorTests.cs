@@ -105,6 +105,17 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             });
         }
 
+        /// <summary>At most one cloud delete is ever outstanding; local-only cases are never held back.</summary>
+        [TestCase(null, 1, true)]
+        [TestCase(2_000_000_000, 1, true)]
+        [TestCase(1_999_999_999, 1, false)]
+        [TestCase(12345, 0, true)]
+        [TestCase(12345, 1, false)]
+        public void CloudDelete_StartsOnlyWhenNoneIsRunning(int? microtingUid, int running, bool expected)
+        {
+            Assert.That(HiddenOverdueCaseRetractor.MayStartDelete(microtingUid, running), Is.EqualTo(expected));
+        }
+
         [Test]
         public void AlreadyRemovedOrRetractedCase_IsNotSelected()
         {

@@ -72,7 +72,7 @@ public class HiddenOverdueCaseRetractor
     private const int LocalOnlyMicrotingUidOffset = 2_000_000_000;
 
     // Cloud deletes abandoned after the timeout keep running (Core.CaseDelete cannot be
-    // cancelled); a later run must not start a second one for the same case.
+    // cancelled); no new cloud delete starts while one is still running (MayStartDelete).
     private static readonly ConcurrentDictionary<int, byte> CloudDeletesInFlight = new();
 
     // The run shares the hourly timer with the rest of SearchListJob; whatever
@@ -209,6 +209,12 @@ public class HiddenOverdueCaseRetractor
         return microtingUid is null or >= LocalOnlyMicrotingUidOffset;
     }
 
+    /// <summary>A local-only case can always be removed; a cloud delete starts only while no earlier one is still running.</summary>
+    public static bool MayStartDelete(int? microtingUid, int cloudDeletesRunning)
+    {
+        return IsLocalOnly(microtingUid) || cloudDeletesRunning == 0;
+    }
+
     /// <summary>
     /// Whether a case may still be retracted: it exists, is live and nobody answered it
     /// (Status 100 or DoneAt set). Checked at selection AND again on a fresh read right
@@ -286,6 +292,7 @@ public class HiddenOverdueCaseRetractor
 
         var retracted = 0;
         var skipped = 0;
+        var deferred = 0;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         foreach (var candidate in candidates)
         {
@@ -294,6 +301,12 @@ public class HiddenOverdueCaseRetractor
                 Log.LogEvent(
                     $"info: HiddenOverdueCaseRetractor: run budget of {RunBudget.TotalMinutes} minutes spent; the rest is left for the next run");
                 break;
+            }
+
+            if (!MayStartDelete(candidate.Case.MicrotingUid, CloudDeletesInFlight.Count))
+            {
+                deferred++;
+                continue;
             }
 
             try
@@ -329,7 +342,7 @@ public class HiddenOverdueCaseRetractor
         }
 
         Log.LogEvent(
-            $"info: HiddenOverdueCaseRetractor: retracted {retracted}, skipped {skipped} (answered or removed during the run), of {candidates.Count} cases");
+            $"info: HiddenOverdueCaseRetractor: retracted {retracted}, skipped {skipped} (answered or removed during the run), deferred {deferred} (cloud delete still running for microtingUid {string.Join(", ", CloudDeletesInFlight.Keys)}), of {candidates.Count} cases");
         return retracted;
     }
 
@@ -356,11 +369,7 @@ public class HiddenOverdueCaseRetractor
         }
 
         var microtingUid = sdkCase.MicrotingUid!.Value;
-        if (!CloudDeletesInFlight.TryAdd(microtingUid, 0))
-        {
-            throw new InvalidOperationException(
-                $"cloud CaseDelete for case {sdkCase.Id} (microtingUid {microtingUid}) is still running from an earlier run; left for the next run");
-        }
+        CloudDeletesInFlight[microtingUid] = 0;
 
         var cloudDelete = _core.CaseDelete(microtingUid);
         _ = cloudDelete.ContinueWith(
@@ -387,6 +396,14 @@ public class HiddenOverdueCaseRetractor
                 TaskScheduler.Default);
             throw new TimeoutException(
                 $"cloud CaseDelete for case {sdkCase.Id} (microtingUid {microtingUid}) did not answer within {CloudCaseDeleteTimeout.TotalSeconds}s; left for the next run");
+        }
+        finally
+        {
+            // Finished (either way): free the slot now, not via continuation ordering.
+            if (cloudDelete.IsCompleted)
+            {
+                CloudDeletesInFlight.TryRemove(microtingUid, out _);
+            }
         }
     }
 }
