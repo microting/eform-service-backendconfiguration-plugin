@@ -28,6 +28,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure.Data.Entities;
@@ -36,7 +37,14 @@ using Microting.eForm.Infrastructure.Constants;
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
 /// <summary>What the 02:00 chemical register sync may apply this run.</summary>
-public sealed record ChemicalSyncDecision(bool ApplyUpserts, bool ApplyRemovals, string Reason);
+public sealed record ChemicalSyncDecision(
+    bool ApplyUpserts, bool ApplyRemovals, string Reason, ChemicalSyncSkip Skip = ChemicalSyncSkip.None);
+
+// RED stub (fix round 1): signatures only.
+public enum ChemicalSyncSkip { None, HttpFailure, NoFeed, EmptyFeed, PartialFeed }
+
+public sealed record ChemicalSyncOutcome(
+    ChemicalSyncDecision Decision, int? FeedRows, int FeedRemoteIds, int? LocalActiveCount);
 
 /// <summary>
 /// Pure decision logic for the 02:00 UTC "chemicalbase updates" step in
@@ -137,4 +145,24 @@ public static class ChemicalFeedGuard
 
         return new HashSet<string>(registrationNos);
     }
+
+    public static ChemicalSyncDecision Decide(int? feedRows, int feedRemoteIds, int localActiveCount)
+        => throw new NotImplementedException();
+
+    public static List<Chemical> SelectToRemove(IReadOnlySet<string> feedRemoteIds, IEnumerable<Chemical> activeLocals)
+        => throw new NotImplementedException();
+
+    public static Chemical PickLocalMatch(IReadOnlyCollection<Chemical> localRows)
+        => throw new NotImplementedException();
+
+    public static bool TryRestore(Chemical local)
+        => throw new NotImplementedException();
+
+    public static Task<ChemicalSyncOutcome> RunAsync(
+        Func<Task<HttpResponseMessage>> fetch,
+        Func<Task<int>> countLocalActive,
+        Func<Chemical, CancellationToken, ValueTask> upsertOne,
+        Func<IReadOnlySet<string>, Task> removeMissing,
+        ParallelOptions parallelOptions)
+        => throw new NotImplementedException();
 }
