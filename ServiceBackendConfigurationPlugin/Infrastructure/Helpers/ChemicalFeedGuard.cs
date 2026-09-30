@@ -65,8 +65,8 @@ public sealed record ChemicalSyncOutcome(
 /// <summary>
 /// Guards the 02:00 UTC "chemicalbase updates" step in <c>SearchListJob</c>.
 /// A bad central feed (non-2xx status, no list, an empty list, or a list with
-/// too few distinct RemoteIds) must never soft-delete the tenant's chemical
-/// register. The whole sync is keyed on RemoteId; the central feed carries
+/// too few distinct RemoteIds, or one that would remove most of the register)
+/// must never soft-delete the tenant's chemical register. The whole sync is keyed on RemoteId; the central feed carries
 /// no WorkflowState, so every feed chemical counts as live.
 /// </summary>
 public static class ChemicalFeedGuard
@@ -78,11 +78,13 @@ public static class ChemicalFeedGuard
     public const double MinimumFeedToLocalRatio = 0.5;
 
     /// <summary>
-    /// RED stub (round 3): not enforced yet.
+    /// A run that would remove more than this share of the tenant's current
+    /// non-removed chemicals is treated as a mass removal: removals skipped.
+    /// Catches a right-sized feed carrying a different RemoteId set.
     /// </summary>
     public const double MaximumRemovalRatio = 0.5;
 
-    /// <summary>The ratio check only applies from this many local chemicals.</summary>
+    /// <summary>Both ratio checks only apply from this many local chemicals.</summary>
     public const int RatioCheckMinimumLocalCount = 100;
 
     /// <summary>
@@ -139,8 +141,10 @@ public static class ChemicalFeedGuard
         {
             chemical.RemoteId = chemical.RemoteId.Trim();
         }
-        var localActiveCount = (await loadActiveLocalRemoteIds().ConfigureAwait(false)).Count;
-        var decision = Decide(feed.Count, keyed.Count, localActiveCount);
+        var feedKeys = FeedKeys(keyed.Select(x => x.RemoteId));
+        var localRemoteIds = await loadActiveLocalRemoteIds().ConfigureAwait(false);
+        var plannedRemovals = localRemoteIds.Count(x => IsMissing(x, feedKeys));
+        var decision = Decide(feed.Count, keyed.Count, localRemoteIds.Count, plannedRemovals);
 
         if (decision.ApplyUpserts)
         {
@@ -149,15 +153,17 @@ public static class ChemicalFeedGuard
 
         if (decision.ApplyRemovals)
         {
-            await removeMissing(keyed.Select(x => x.RemoteId).ToHashSet(RemoteIdComparer)).ConfigureAwait(false);
+            await removeMissing(feedKeys).ConfigureAwait(false);
         }
 
-        return new ChemicalSyncOutcome(decision, response.StatusCode, feed.Count, keyed.Count, localActiveCount);
+        return new ChemicalSyncOutcome(
+            decision, response.StatusCode, feed.Count, keyed.Count, localRemoteIds.Count, plannedRemovals);
     }
 
     /// <param name="feedRows">Parsed feed rows, or null when the body held no list.</param>
     /// <param name="feedRemoteIds">Distinct non-empty RemoteIds in the feed.</param>
     /// <param name="localActiveCount">Non-removed local chemicals, counted before any upsert.</param>
+    /// <param name="plannedRemovals">Local chemicals the removal phase would remove.</param>
     public static ChemicalSyncDecision Decide(int? feedRows, int feedRemoteIds, int localActiveCount, int plannedRemovals = 0)
     {
         if (feedRows == null)
@@ -177,6 +183,12 @@ public static class ChemicalFeedGuard
             return new ChemicalSyncDecision(true, false, ChemicalSyncSkip.PartialFeed);
         }
 
+        if (localActiveCount >= RatioCheckMinimumLocalCount
+            && plannedRemovals > localActiveCount * MaximumRemovalRatio)
+        {
+            return new ChemicalSyncDecision(true, false, ChemicalSyncSkip.MassRemoval);
+        }
+
         return new ChemicalSyncDecision(true, true, ChemicalSyncSkip.None);
     }
 
@@ -187,14 +199,18 @@ public static class ChemicalFeedGuard
     /// </summary>
     public static List<Chemical> SelectToRemove(IReadOnlySet<string> feedRemoteIds, IEnumerable<Chemical> activeLocals)
     {
-        var feedKeys = feedRemoteIds
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Select(x => x.Trim())
-            .ToHashSet(RemoteIdComparer);
-        return activeLocals
-            .Where(x => !string.IsNullOrWhiteSpace(x.RemoteId) && !feedKeys.Contains(x.RemoteId.Trim()))
-            .ToList();
+        var feedKeys = FeedKeys(feedRemoteIds);
+        return activeLocals.Where(x => IsMissing(x.RemoteId, feedKeys)).ToList();
     }
+
+    private static HashSet<string> FeedKeys(IEnumerable<string> feedRemoteIds) => feedRemoteIds
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Select(x => x.Trim())
+        .ToHashSet(RemoteIdComparer);
+
+    /// <summary>The one removal rule: a keyed local chemical whose RemoteId is not in the feed.</summary>
+    private static bool IsMissing(string localRemoteId, HashSet<string> feedKeys) =>
+        !string.IsNullOrWhiteSpace(localRemoteId) && !feedKeys.Contains(localRemoteId.Trim());
 
     /// <summary>
     /// The local row a feed chemical updates, from all local rows with its

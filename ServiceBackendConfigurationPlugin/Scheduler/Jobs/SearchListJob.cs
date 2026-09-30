@@ -757,12 +757,6 @@ public class SearchListJob : IJob
     /// <summary>Upserts one feed chemical, matched on RemoteId (see ChemicalFeedGuard).</summary>
     private async ValueTask UpsertChemical(Chemical chemical, CancellationToken ct)
     {
-        if (chemical.WorkflowState == Constants.WorkflowStates.Removed)
-        {
-            Console.WriteLine($"info: Chemical is removed so skipping : {chemical.Name}");
-            return;
-        }
-
         await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
         var localRows = await chemicalsDbContext.Chemicals
             .Include(x => x.Products)
@@ -910,13 +904,13 @@ public class SearchListJob : IJob
     /// <summary>
     /// Logs every run; reports skipped runs to Sentry under one constant message and a per-skip
     /// fingerprint, so all tenants group into one issue. An outage (HTTP failure, no or empty feed)
-    /// is a Warning; a partial feed is an Error.
+    /// is a Warning; a partial feed or a mass removal is an Error.
     /// </summary>
     private static void ReportChemicalSync(ChemicalSyncOutcome outcome)
     {
         var skip = outcome.Decision.Skip;
         var counts =
-            $"HTTP {(int)outcome.StatusCode}, feed rows {outcome.FeedRows?.ToString() ?? "n/a"}, feed RemoteIds {outcome.FeedRemoteIds}, local active {outcome.LocalActiveCount?.ToString() ?? "n/a"}";
+            $"HTTP {(int)outcome.StatusCode}, feed rows {outcome.FeedRows?.ToString() ?? "n/a"}, feed RemoteIds {outcome.FeedRemoteIds}, local active {outcome.LocalActiveCount?.ToString() ?? "n/a"}, planned removals {outcome.PlannedRemovals?.ToString() ?? "n/a"}";
         if (skip == ChemicalSyncSkip.None)
         {
             Log.LogEvent($"SearchListJob.Task: chemicalbase updates applied ({counts})");
@@ -933,8 +927,9 @@ public class SearchListJob : IJob
                 scope.SetExtra("feedRows", outcome.FeedRows);
                 scope.SetExtra("feedRemoteIds", outcome.FeedRemoteIds);
                 scope.SetExtra("localActiveCount", outcome.LocalActiveCount);
+                scope.SetExtra("plannedRemovals", outcome.PlannedRemovals);
             },
-            skip == ChemicalSyncSkip.PartialFeed ? SentryLevel.Error : SentryLevel.Warning);
+            skip is ChemicalSyncSkip.PartialFeed or ChemicalSyncSkip.MassRemoval ? SentryLevel.Error : SentryLevel.Warning);
     }
 
     private async Task<string> GenerateDocumentList(List<DocumentProperty> documentProperties,
