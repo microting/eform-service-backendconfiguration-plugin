@@ -827,50 +827,21 @@ public class SearchListJob : IJob
                 x.RemoteId == chemical.AuthorisationHolder.RemoteId).Id;
         }
 
-        if (chemical.Products.Count != c.Products.Count)
+        // Products carry no id in the feed: match by barcode, then SDS file name, then placeholder
+        // (see ChemicalProductMatcher). Local products the feed no longer lists are left untouched.
+        // Updates are saved before creates, so each update gets its own version row.
+        var matches = ChemicalProductMatcher.Match(chemical.Products?.ToList() ?? [], c.Products.ToList());
+        foreach (var match in matches.Where(x => x.Local != null))
         {
-            foreach (var chemicalProduct in chemical.Products)
+            if (ChemicalProductMatcher.Apply(match.Feed, match.Local))
             {
-                var dbProduct = await chemicalsDbContext.Products.FirstOrDefaultAsync(
-                    x =>
-                        x.ChemicalId == c.Id && x.FileName == chemicalProduct.FileName);
-                if (dbProduct == null)
-                {
-                    dbProduct = new Product
-                    {
-                        FileName = chemicalProduct.FileName,
-                        Barcode = chemicalProduct.Barcode,
-                        ChemicalId = c.Id,
-                        Checksum = ""
-                    };
-                    await dbProduct.Create(chemicalsDbContext);
-                }
-                else
-                {
-                    dbProduct.Barcode = chemicalProduct.Barcode;
-                    dbProduct.Name = chemicalProduct.Name;
-                    dbProduct.Checksum = chemicalProduct.Checksum;
-                    await dbProduct.Update(chemicalsDbContext);
-                }
+                await match.Local.Update(chemicalsDbContext).ConfigureAwait(false);
             }
         }
-        else
+
+        foreach (var match in matches.Where(x => x.Local == null))
         {
-            foreach (var cProduct in c.Products)
-            {
-                var dbProduct =
-                    await chemicalsDbContext.Products.FirstAsync(x =>
-                        x.Id == cProduct.Id);
-                foreach (var chemicalProduct in chemical.Products)
-                {
-                    if (chemicalProduct.Name == cProduct.Name)
-                    {
-                        dbProduct.FileName = chemicalProduct.FileName;
-                        dbProduct.Barcode = chemicalProduct.Barcode;
-                        await dbProduct.Update(chemicalsDbContext);
-                    }
-                }
-            }
+            await ChemicalProductMatcher.CreateFrom(match.Feed, c.Id).Create(chemicalsDbContext).ConfigureAwait(false);
         }
 
         await c.Update(chemicalsDbContext).ConfigureAwait(false);
