@@ -891,7 +891,7 @@ public class SearchListJob : IJob
             .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
             .ToListAsync().ConfigureAwait(false);
 
-        var unkeyed = activeLocals.Count(x => string.IsNullOrEmpty(x.RemoteId));
+        var unkeyed = activeLocals.Count(x => string.IsNullOrWhiteSpace(x.RemoteId));
         if (unkeyed > 0)
         {
             Log.LogEvent(

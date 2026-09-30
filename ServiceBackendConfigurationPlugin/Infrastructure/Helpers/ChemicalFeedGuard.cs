@@ -77,6 +77,13 @@ public static class ChemicalFeedGuard
     /// <summary>The ratio check only applies from this many local chemicals.</summary>
     public const int RatioCheckMinimumLocalCount = 100;
 
+    /// <summary>
+    /// RemoteIds are matched in SQL by the upsert under the tenant DB's case-insensitive
+    /// collation, so every in-memory comparison ignores case too (on trimmed values);
+    /// otherwise a chemical the upsert matched could still be removed as "missing".
+    /// </summary>
+    public static readonly StringComparer RemoteIdComparer = StringComparer.OrdinalIgnoreCase;
+
     private static readonly JsonSerializerOptions FeedJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -89,7 +96,7 @@ public static class ChemicalFeedGuard
     /// <see cref="Decide"/> allows removals. Exceptions propagate.
     /// </summary>
     /// <param name="countLocalActive">Non-removed local chemicals; called before any upsert.</param>
-    /// <param name="upsertOne">Called once per distinct, non-empty feed RemoteId, in parallel.</param>
+    /// <param name="upsertOne">Called in parallel once per distinct feed RemoteId (trimmed, case-insensitive); the chemical carries the trimmed RemoteId.</param>
     /// <param name="removeMissing">Receives the feed's full RemoteId set.</param>
     public static async Task<ChemicalSyncOutcome> RunAsync(
         Func<Task<HttpResponseMessage>> fetch,
@@ -115,10 +122,15 @@ public static class ChemicalFeedGuard
 
         // One chemical per RemoteId: rows without a key could only match local rows
         // by accident, and duplicates would race each other into duplicate creates.
+        // Keys are trimmed and compared like the DB collation (see RemoteIdComparer).
         var keyed = feed
-            .Where(x => x != null && !string.IsNullOrEmpty(x.RemoteId))
-            .DistinctBy(x => x.RemoteId)
+            .Where(x => x != null && !string.IsNullOrWhiteSpace(x.RemoteId))
+            .DistinctBy(x => x.RemoteId.Trim(), RemoteIdComparer)
             .ToList();
+        foreach (var chemical in keyed)
+        {
+            chemical.RemoteId = chemical.RemoteId.Trim();
+        }
         var localActiveCount = await countLocalActive().ConfigureAwait(false);
         var decision = Decide(feed.Count, keyed.Count, localActiveCount);
 
@@ -129,7 +141,7 @@ public static class ChemicalFeedGuard
 
         if (decision.ApplyRemovals)
         {
-            await removeMissing(keyed.Select(x => x.RemoteId).ToHashSet()).ConfigureAwait(false);
+            await removeMissing(keyed.Select(x => x.RemoteId).ToHashSet(RemoteIdComparer)).ConfigureAwait(false);
         }
 
         return new ChemicalSyncOutcome(decision, response.StatusCode, feed.Count, keyed.Count, localActiveCount);
@@ -162,12 +174,17 @@ public static class ChemicalFeedGuard
 
     /// <summary>
     /// Active local chemicals whose RemoteId is not in the feed. Rows without a
-    /// RemoteId (local-only) are never removed.
+    /// RemoteId (local-only) are never removed. Matching is trimmed and
+    /// case-insensitive whatever comparer <paramref name="feedRemoteIds"/> uses.
     /// </summary>
     public static List<Chemical> SelectToRemove(IReadOnlySet<string> feedRemoteIds, IEnumerable<Chemical> activeLocals)
     {
+        var feedKeys = feedRemoteIds
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .ToHashSet(RemoteIdComparer);
         return activeLocals
-            .Where(x => !string.IsNullOrEmpty(x.RemoteId) && !feedRemoteIds.Contains(x.RemoteId))
+            .Where(x => !string.IsNullOrWhiteSpace(x.RemoteId) && !feedKeys.Contains(x.RemoteId.Trim()))
             .ToList();
     }
 
