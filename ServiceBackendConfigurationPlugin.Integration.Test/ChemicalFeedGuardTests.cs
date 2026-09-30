@@ -233,6 +233,53 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             Assert.That(harness.RemoveCalls.Single(), Has.Count.EqualTo(300));
         }
 
+        // ---- RemoteId comparison matches the DB collation (case-insensitive, trimmed)
+
+        [Test]
+        public async Task FeedRemoteIdDifferingOnlyInCaseOrWhitespace_DoesNotRemoveTheLocalChemical()
+        {
+            var harness = new Harness();
+
+            await harness.Run(FeedJson(new[] { "REMOTE-1", " remote-2 " }), localActiveCount: 2);
+
+            var locals = new[] { Local(1, "remote-1"), Local(2, "Remote-2") };
+            Assert.That(ChemicalFeedGuard.SelectToRemove(harness.RemoveCalls.Single(), locals), Is.Empty);
+        }
+
+        [Test]
+        public void SelectToRemove_ComparesRemoteIdsCaseInsensitivelyAndTrimmed_WhateverTheSetComparer()
+        {
+            var feed = new HashSet<string>(StringComparer.Ordinal) { "REMOTE-1", "remote-2 " };
+            var locals = new[] { Local(1, " remote-1"), Local(2, "Remote-2"), Local(3, "remote-3") };
+
+            var removed = ChemicalFeedGuard.SelectToRemove(feed, locals);
+
+            Assert.That(removed.Select(x => x.Id), Is.EquivalentTo(new[] { 3 }));
+        }
+
+        [Test]
+        public async Task RemoteIdsDifferingOnlyInCaseOrWhitespace_AreUpsertedOnce_Trimmed()
+        {
+            var harness = new Harness();
+
+            await harness.Run(FeedJson(new[] { "remote-1", "REMOTE-1", " remote-1 " }), localActiveCount: 1);
+
+            Assert.That(harness.Upserted, Is.EquivalentTo(new[] { "remote-1" }));
+            Assert.That(harness.RemoveCalls.Single(), Has.Count.EqualTo(1));
+        }
+
+        [Test]
+        public async Task WhitespaceOnlyRemoteIds_CountAsMissing()
+        {
+            var harness = new Harness();
+
+            var outcome = await harness.Run(FeedJson(Enumerable.Repeat("   ", 200)), localActiveCount: 200);
+
+            Assert.That(harness.Upserted, Is.Empty);
+            Assert.That(harness.RemoveCalls, Is.Empty);
+            Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.PartialFeed));
+        }
+
         // ---- Decide -------------------------------------------------------
 
         [Test]
