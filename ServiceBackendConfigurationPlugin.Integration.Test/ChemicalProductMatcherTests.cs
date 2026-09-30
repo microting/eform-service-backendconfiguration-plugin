@@ -258,15 +258,16 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         }
 
         [Test]
-        public void EmptyFileMd5_NeverMatchesByFileName()
+        public void EmptyFileMd5_IsAPlaceholder_AndPlaceholdersPairOneToOne()
         {
             var locals = new List<Product> { LocalRow(1, null, EmptyFileMd5), LocalRow(2, null, EmptyFileMd5) };
             var feed = new[] { Feed(null, EmptyFileMd5), Feed(null, EmptyFileMd5) };
 
             var matches = ChemicalProductMatcher.Match(feed, locals);
 
-            // Placeholder to placeholder, at most one.
-            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { 1, null }));
+            // Placeholders pair one-to-one (each local claimed once); otherwise every run would
+            // create another placeholder row.
+            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { 1, 2 }));
         }
 
         [Test]
