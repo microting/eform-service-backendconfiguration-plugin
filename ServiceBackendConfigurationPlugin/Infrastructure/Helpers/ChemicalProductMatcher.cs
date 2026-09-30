@@ -28,6 +28,7 @@ SOFTWARE.
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure.Data.Entities;
 using Microting.eForm.Infrastructure.Constants;
 
@@ -135,6 +136,10 @@ public static class ChemicalProductMatcher
         local.Verified = feed.Verified;
         return true;
     }
+
+    /// <summary>RED stub: matches, then updates changed rows and creates unmatched feed products.</summary>
+    public static Task ReconcileAsync(IReadOnlyList<Product> feed, IReadOnlyList<Product> locals, int chemicalId,
+        Func<Product, Task> update, Func<Product, Task> create) => throw new NotImplementedException();
 
     /// <summary>A new local row for an unmatched feed product (the feed's own ids are not reused).</summary>
     public static Product CreateFrom(Product feed, int chemicalId)

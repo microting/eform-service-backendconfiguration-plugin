@@ -27,6 +27,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 {
     using System.Collections.Generic;
     using System.Linq;
+    using System.Threading.Tasks;
     using ChemicalsBase.Infrastructure.Data.Entities;
     using Microting.eForm.Infrastructure.Constants;
     using NUnit.Framework;
@@ -35,14 +36,21 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
     /// <summary>
     /// Product matching in the nightly chemical register sync (SearchListJob). The feed carries no
     /// product id, and one product = one SDS = one barcode. Products are matched by barcode, then by
-    /// real SDS file name, then placeholder to placeholder, and never by Name or by count/position.
+    /// real SDS file name, then placeholder, then central corrections; never by Name or position.
     /// </summary>
     [TestFixture]
     public class ChemicalProductMatcherTests
     {
         private const int ChemicalId = 7;
+
+        // Pinned literal on purpose (the matcher keeps its own private copy).
         private const string EmptyFileMd5 = "d41d8cd98f00b204e9800998ecf8427e";
 
+        /// <summary>
+        /// Mirrors the real feed projection: Barcode, Name, FileName, Checksum, Verified. IsActive and
+        /// IsValid are never sent, so they deserialize as false. Checksum defaults to a non-empty
+        /// value so a first sync onto a fresh local row registers as a change.
+        /// </summary>
         private static Product Feed(string barcode = null, string fileName = null, string name = null,
             string checksum = "sum") => new()
         {
@@ -50,8 +58,6 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             FileName = fileName,
             Name = name,
             Checksum = checksum,
-            IsActive = true,
-            IsValid = true,
             Verified = true
         };
 
@@ -68,33 +74,36 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         };
 
         /// <summary>
-        /// Runs one sync pass the way SearchListJob does: matched rows are updated in place, unmatched
-        /// feed products become new local rows. Returns how many rows were created or changed.
+        /// Runs the production reconcile step with recording delegates in place of EF: created rows
+        /// get the next Id and join the local list. Returns how many rows were created or updated.
         /// </summary>
-        private static int Sync(IReadOnlyList<Product> feed, List<Product> locals)
+        private static async Task<int> Sync(IReadOnlyList<Product> feed, List<Product> locals)
         {
             var writes = 0;
-            foreach (var match in ChemicalProductMatcher.Match(feed, locals))
-            {
-                if (match.Local == null)
+            await ChemicalProductMatcher.ReconcileAsync(feed, locals.ToList(), ChemicalId,
+                update: _ =>
                 {
-                    var created = ChemicalProductMatcher.CreateFrom(match.Feed, ChemicalId);
+                    writes++;
+                    return Task.CompletedTask;
+                },
+                create: created =>
+                {
                     created.Id = locals.Count == 0 ? 1 : locals.Max(x => x.Id) + 1;
                     created.WorkflowState = Constants.WorkflowStates.Created;
                     locals.Add(created);
                     writes++;
-                }
-                else if (ChemicalProductMatcher.Apply(match.Feed, match.Local))
-                {
-                    writes++;
-                }
-            }
-
+                    return Task.CompletedTask;
+                });
             return writes;
         }
 
+        private static int?[] MatchedIds(IReadOnlyList<Product> feed, IReadOnlyList<Product> locals) =>
+            ChemicalProductMatcher.Match(feed, locals).Select(m => m.Local?.Id).ToArray();
+
+        // ---- barcode ----
+
         [Test]
-        public void TwoNewProductsWithNullName_AndDistinctFileNamesAndBarcodes_BothSurvive()
+        public async Task TwoNewProductsWithNullName_AndDistinctFileNamesAndBarcodes_BothSurvive()
         {
             var locals = new List<Product>();
             var feed = new[]
@@ -103,8 +112,8 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Feed("5701234567885", "sds-b.pdf")
             };
 
-            Sync(feed, locals);
-            Sync(feed, locals);
+            await Sync(feed, locals);
+            await Sync(feed, locals);
 
             Assert.That(locals.Select(x => x.Barcode),
                 Is.EquivalentTo(new[] { "5701234567892", "5701234567885" }));
@@ -126,57 +135,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Feed("5701234567885", "sds-b.pdf")
             };
 
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { 1, 2 }));
-        }
-
-        [Test]
-        public void FillingPlaceholderBarcode_WithRealFileName_UpdatesTheLocalPlaceholder()
-        {
-            var locals = new List<Product> { LocalRow(1, null, "sds-a.pdf") };
-            var feed = new[] { Feed("5701234567892", "sds-a.pdf", name: "1 L") };
-
-            Sync(feed, locals);
-
-            Assert.That(locals, Has.Count.EqualTo(1));
-            Assert.That(locals[0].Id, Is.EqualTo(1));
-            Assert.That(locals[0].Barcode, Is.EqualTo("5701234567892"));
-            Assert.That(locals[0].Name, Is.EqualTo("1 L"));
-        }
-
-        [Test]
-        public void FillingPlaceholderBarcode_WithoutRealFileName_UpdatesTheLocalPlaceholder()
-        {
-            var locals = new List<Product> { LocalRow(1, null, EmptyFileMd5) };
-            var feed = new[] { Feed("5701234567892", EmptyFileMd5) };
-
-            Sync(feed, locals);
-
-            Assert.That(locals, Has.Count.EqualTo(1));
-            Assert.That(locals[0].Barcode, Is.EqualTo("5701234567892"));
-        }
-
-        [Test]
-        public void PlaceholderFeedProduct_MatchesPlaceholderLocal()
-        {
-            var locals = new List<Product> { LocalRow(1, "  ", "") };
-            var feed = new[] { Feed(null, null) };
-
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Single().Local?.Id, Is.EqualTo(1));
-        }
-
-        [Test]
-        public void AtMostOneFeedPlaceholder_ClaimsTheLocalPlaceholder()
-        {
-            var locals = new List<Product> { LocalRow(1) };
-            var feed = new[] { Feed(null, null), Feed(null, EmptyFileMd5.ToUpperInvariant()) };
-
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { 1, null }));
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1, 2 }));
         }
 
         [Test]
@@ -189,39 +148,38 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             };
             var feed = new[] { Feed("5701234567892", "sds-a.pdf") };
 
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Single().Local?.Id, Is.EqualTo(2));
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 2 }));
         }
 
         [Test]
         public void BarcodeMatch_ClaimsFirst_EvenWhenAnEarlierFeedProductSharesTheFileName()
         {
-            var locals = new List<Product>
-            {
-                LocalRow(1, "5701234567892", "sds-a.pdf")
-            };
+            var locals = new List<Product> { LocalRow(1, "5701234567892", "sds-a.pdf") };
             var feed = new[]
             {
                 Feed(null, "sds-a.pdf"),
                 Feed("5701234567892", "sds-a.pdf")
             };
 
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { null, 1 }));
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null, 1 }));
         }
 
         [Test]
-        public void FileNameMatch_NeverClaimsALocalWithADifferentBarcode()
+        public void SharedBarcode_PrefersTheLocalRowWithTheSameSds_WhenLocalsAreCrosswise()
         {
-            // Same SDS, different size: a different barcode is a different product.
-            var locals = new List<Product> { LocalRow(1, "5701234567892", "sds-a.pdf") };
-            var feed = new[] { Feed("5701234567885", "sds-a.pdf") };
+            // Two sizes sharing one barcode (10 live chemicals): the SDS decides, never the Id order.
+            var locals = new List<Product>
+            {
+                LocalRow(1, "3362130037422", "sds-10l.pdf", "10 L"),
+                LocalRow(2, "3362130037422", "sds-5l.pdf", "5 L")
+            };
+            var feed = new[]
+            {
+                Feed("3362130037422", "sds-5l.pdf", "5 L"),
+                Feed("3362130037422", "sds-10l.pdf", "10 L")
+            };
 
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Single().Local, Is.Null);
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 2, 1 }));
         }
 
         [TestCase("036000291452", "0036000291452")]
@@ -232,9 +190,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var locals = new List<Product> { LocalRow(1, localBarcode, "sds-old.pdf") };
             var feed = new[] { Feed(feedBarcode, "sds-new.pdf") };
 
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Single().Local?.Id, Is.EqualTo(1));
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1 }));
         }
 
         [Test]
@@ -243,7 +199,41 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var locals = new List<Product> { LocalRow(1, "1036000291452", "sds-old.pdf") };
             var feed = new[] { Feed("036000291452", "sds-new.pdf") };
 
-            Assert.That(ChemicalProductMatcher.Match(feed, locals).Single().Local, Is.Null);
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null }));
+        }
+
+        // ---- SDS file name ----
+
+        [Test]
+        public async Task BarcodeAddedToAProductWithAnSds_UpdatesThatRow()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "sds-a.pdf") };
+            var feed = new[] { Feed("5701234567892", "sds-a.pdf", name: "1 L") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].Id, Is.EqualTo(1));
+            Assert.That(locals[0].Barcode, Is.EqualTo("5701234567892"));
+            Assert.That(locals[0].Name, Is.EqualTo("1 L"));
+        }
+
+        [Test]
+        public void FileNameMatch_NeverClaimsALocalWhoseDifferentBarcodeIsStillInTheFeed()
+        {
+            // Same SDS, different size: a different barcode that is still live is a different product.
+            var locals = new List<Product>
+            {
+                LocalRow(1, "5701234567892", "sds-a.pdf"),
+                LocalRow(2, "5701234567892", "sds-b.pdf")
+            };
+            var feed = new[]
+            {
+                Feed("5701234567892", "sds-b.pdf"),
+                Feed("5701234567885", "sds-a.pdf")
+            };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 2, null }));
         }
 
         [TestCase(null, false)]
@@ -252,22 +242,9 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         [TestCase(EmptyFileMd5, false)]
         [TestCase("D41D8CD98F00B204E9800998ECF8427E", false)]
         [TestCase("sds-a.pdf", true)]
-        public void IsRealFileName(string fileName, bool expected)
+        public void IsRealFileName_ReturnsExpected(string fileName, bool expected)
         {
             Assert.That(ChemicalProductMatcher.IsRealFileName(fileName), Is.EqualTo(expected));
-        }
-
-        [Test]
-        public void EmptyFileMd5_IsAPlaceholder_AndPlaceholdersPairOneToOne()
-        {
-            var locals = new List<Product> { LocalRow(1, null, EmptyFileMd5), LocalRow(2, null, EmptyFileMd5) };
-            var feed = new[] { Feed(null, EmptyFileMd5), Feed(null, EmptyFileMd5) };
-
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            // Placeholders pair one-to-one (each local claimed once); otherwise every run would
-            // create another placeholder row.
-            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { 1, 2 }));
         }
 
         [Test]
@@ -280,14 +257,196 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Feed(null, "sds-a.pdf", "5 L")
             };
 
-            var matches = ChemicalProductMatcher.Match(feed, locals);
-
-            Assert.That(matches.Select(m => m.Local?.Id), Is.EqualTo(new int?[] { 1, null }));
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1, null }));
         }
+
+        // ---- placeholders ----
+
+        [Test]
+        public void PlaceholderFeedProduct_MatchesPlaceholderLocal()
+        {
+            var locals = new List<Product> { LocalRow(1, "  ", "") };
+            var feed = new[] { Feed(null, null) };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1 }));
+        }
+
+        [Test]
+        public void AtMostOneFeedPlaceholder_ClaimsTheLocalPlaceholder()
+        {
+            var locals = new List<Product> { LocalRow(1) };
+            var feed = new[] { Feed(null, null), Feed(null, EmptyFileMd5.ToUpperInvariant()) };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1, null }));
+        }
+
+        [Test]
+        public void EmptyFileMd5_IsAPlaceholder_AndPlaceholdersPairOneToOne()
+        {
+            var locals = new List<Product> { LocalRow(1, null, EmptyFileMd5), LocalRow(2, null, EmptyFileMd5) };
+            var feed = new[] { Feed(null, EmptyFileMd5), Feed(null, EmptyFileMd5) };
+
+            // One-to-one; otherwise every run would create another placeholder row.
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1, 2 }));
+        }
+
+        [Test]
+        public void PurePlaceholdersPairFirst_EvenWhenABarcodedPlaceholderPrecedesThemInTheFeed()
+        {
+            var locals = new List<Product> { LocalRow(1) };
+            var feed = new[] { Feed("5701234567892", ""), Feed(null, "") };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null, 1 }));
+        }
+
+        [Test]
+        public async Task BarcodeFilledOnPlaceholder_WithoutRealFileName_UpdatesTheLocalPlaceholder()
+        {
+            var locals = new List<Product> { LocalRow(1, null, EmptyFileMd5) };
+            var feed = new[] { Feed("5701234567892", EmptyFileMd5) };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].Barcode, Is.EqualTo("5701234567892"));
+        }
+
+        [Test]
+        public async Task SdsUploadedOntoPlaceholder_UpdatesTheLocalPlaceholder()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "") };
+            var feed = new[] { Feed(null, "sds-h.pdf") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].Id, Is.EqualTo(1));
+            Assert.That(locals[0].FileName, Is.EqualTo("sds-h.pdf"));
+        }
+
+        [Test]
+        public async Task BarcodeAndSdsAddedTheSameDay_UpdateTheLocalPlaceholder()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "") };
+            var feed = new[] { Feed("5701234567892", "sds-h.pdf") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].Id, Is.EqualTo(1));
+            Assert.That(locals[0].Barcode, Is.EqualTo("5701234567892"));
+            Assert.That(locals[0].FileName, Is.EqualTo("sds-h.pdf"));
+        }
+
+        // ---- central corrections (owner decision) ----
+
+        [Test]
+        public async Task BarcodeCorrectedCentrally_UpdatesTheRowInPlace()
+        {
+            var locals = new List<Product> { LocalRow(1, "5701234567892", "sds-a.pdf") };
+            var feed = new[] { Feed("5701234567885", "sds-a.pdf") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].Barcode, Is.EqualTo("5701234567885"));
+        }
+
+        [Test]
+        public async Task BarcodeClearedCentrally_UpdatesTheRowInPlace()
+        {
+            var locals = new List<Product> { LocalRow(1, "5701234567892", "sds-a.pdf") };
+            var feed = new[] { Feed(null, "sds-a.pdf") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].Barcode, Is.Null);
+        }
+
+        [Test]
+        public void BarcodeCorrection_IsNotApplied_WhenTwoFeedProductsShareTheSds()
+        {
+            var locals = new List<Product> { LocalRow(1, "5701234567892", "sds-a.pdf") };
+            var feed = new[] { Feed("5701234567885", "sds-a.pdf"), Feed("5701234567878", "sds-a.pdf") };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null, null }));
+        }
+
+        [Test]
+        public void BarcodeCorrection_IsNotApplied_WhenTwoLocalRowsCompeteForOneFeedProduct()
+        {
+            var locals = new List<Product>
+            {
+                LocalRow(1, "5701234567892", "sds-a.pdf"),
+                LocalRow(2, "5701234567878", "sds-a.pdf")
+            };
+            var feed = new[] { Feed("5701234567885", "sds-a.pdf") };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null }));
+        }
+
+        [Test]
+        public async Task SdsReplacedCentrally_OnABarcodelessProduct_UpdatesTheRowInPlace()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "sds-old.pdf") };
+            var feed = new[] { Feed(null, "sds-new.pdf") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].FileName, Is.EqualTo("sds-new.pdf"));
+        }
+
+        [Test]
+        public async Task SdsDeletedCentrally_UpdatesTheRowInPlace()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "sds-wrong.pdf") };
+            var feed = new[] { Feed(null, "") };
+
+            await Sync(feed, locals);
+
+            Assert.That(locals, Has.Count.EqualTo(1));
+            Assert.That(locals[0].FileName, Is.EqualTo(""));
+        }
+
+        [Test]
+        public void SdsCorrection_IsNotApplied_WhenTwoFeedProductsAreCandidates()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "sds-old.pdf") };
+            var feed = new[] { Feed(null, "sds-new-1.pdf"), Feed(null, "sds-new-2.pdf") };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null, null }));
+        }
+
+        [Test]
+        public void SdsCorrection_IsNotApplied_WhenTwoLocalRowsCompeteForOneFeedProduct()
+        {
+            var locals = new List<Product> { LocalRow(1, null, "sds-old-1.pdf"), LocalRow(2, null, "sds-old-2.pdf") };
+            var feed = new[] { Feed(null, "sds-new.pdf") };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null }));
+        }
+
+        [Test]
+        public void SdsCorrection_IsNotApplied_WhenTheLocalSdsIsStillInTheFeed()
+        {
+            var locals = new List<Product>
+            {
+                LocalRow(1, null, "sds-a.pdf"),
+                LocalRow(2, null, "sds-a.pdf")
+            };
+            var feed = new[] { Feed(null, "sds-a.pdf"), Feed(null, "sds-b.pdf") };
+
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { 1, null }));
+        }
+
+        // ---- general properties ----
 
         [Test]
         public void EachLocalRow_IsMatchedAtMostOnce()
         {
+            // Property check across all steps (overlaps the ordered cases above on purpose).
             var locals = new List<Product>
             {
                 LocalRow(1, "5701234567892", "sds-a.pdf"),
@@ -302,11 +461,10 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Feed()
             };
 
-            var matched = ChemicalProductMatcher.Match(feed, locals)
-                .Where(m => m.Local != null).Select(m => m.Local.Id).ToList();
+            var matched = MatchedIds(feed, locals).Where(x => x != null).ToList();
 
             Assert.That(matched, Is.Unique);
-            Assert.That(matched, Is.EquivalentTo(new[] { 1, 2 }));
+            Assert.That(matched, Is.EquivalentTo(new int?[] { 1, 2 }));
         }
 
         [Test]
@@ -315,7 +473,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var locals = new List<Product> { LocalRow(1, "5701234567892", "sds-a.pdf", "1 L") };
             var feed = new[] { Feed("5701234567885", "sds-b.pdf", "1 L") };
 
-            Assert.That(ChemicalProductMatcher.Match(feed, locals).Single().Local, Is.Null);
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null }));
         }
 
         [Test]
@@ -327,17 +485,17 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             };
             var feed = new[] { Feed("5701234567892", "sds-a.pdf") };
 
-            Assert.That(ChemicalProductMatcher.Match(feed, locals).Single().Local, Is.Null);
+            Assert.That(MatchedIds(feed, locals), Is.EqualTo(new int?[] { null }));
         }
 
         [Test]
-        public void UnmatchedLocalRows_AreLeftUntouched()
+        public async Task UnmatchedLocalRows_AreLeftUntouched()
         {
             var untouched = LocalRow(1, "5701234567892", "sds-a.pdf", "1 L");
             var locals = new List<Product> { untouched };
             var feed = new[] { Feed("5701234567885", "sds-b.pdf", "5 L") };
 
-            Sync(feed, locals);
+            await Sync(feed, locals);
 
             Assert.That(locals, Has.Count.EqualTo(2));
             Assert.That(untouched.Barcode, Is.EqualTo("5701234567892"));
@@ -347,62 +505,71 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         }
 
         [Test]
-        public void MatchedRow_TakesEveryProductFieldFromTheFeed()
+        public void MatchedRow_TakesTheFeedFields_AndKeepsIsActiveAndIsValid()
         {
             var local = LocalRow(1, null, "sds-a.pdf", "old");
-            var feed = new Product
-            {
-                Barcode = "5701234567892",
-                FileName = "sds-a.pdf",
-                Name = null,
-                Checksum = "abc",
-                IsActive = true,
-                IsValid = true,
-                Verified = true
-            };
+            local.IsActive = true;
+            local.IsValid = true;
 
-            var changed = ChemicalProductMatcher.Apply(feed, local);
+            var changed = ChemicalProductMatcher.Apply(Feed("5701234567892", "sds-a.pdf", null, "abc"), local);
 
             Assert.That(changed, Is.True);
             Assert.That(local.Barcode, Is.EqualTo("5701234567892"));
             Assert.That(local.FileName, Is.EqualTo("sds-a.pdf"));
             Assert.That(local.Name, Is.Null);
             Assert.That(local.Checksum, Is.EqualTo("abc"));
+            Assert.That(local.Verified, Is.True);
+            // The feed never sends IsActive/IsValid; the sync must not reset them.
             Assert.That(local.IsActive, Is.True);
             Assert.That(local.IsValid, Is.True);
-            Assert.That(local.Verified, Is.True);
             Assert.That(local.Id, Is.EqualTo(1));
             Assert.That(local.ChemicalId, Is.EqualTo(ChemicalId));
         }
 
         [Test]
-        public void CreatedRow_TakesEveryProductFieldFromTheFeed()
+        public void MatchedRow_ThatAlreadyEqualsTheFeed_IsNotChanged()
         {
-            var created = ChemicalProductMatcher.CreateFrom(Feed("5701234567892", "sds-a.pdf", "1 L", "abc"),
-                ChemicalId);
+            var local = LocalRow(1, "5701234567892", "sds-a.pdf", "1 L");
+            local.Checksum = "sum";
+            local.Verified = true;
 
+            Assert.That(ChemicalProductMatcher.Apply(Feed("5701234567892", "sds-a.pdf", "1 L"), local), Is.False);
+        }
+
+        [Test]
+        public async Task CreatedRow_TakesTheFeedFields()
+        {
+            var locals = new List<Product>();
+
+            await Sync(new[] { Feed("5701234567892", "sds-a.pdf", "1 L", "abc") }, locals);
+
+            var created = locals.Single();
             Assert.That(created.ChemicalId, Is.EqualTo(ChemicalId));
-            Assert.That(created.Id, Is.EqualTo(0));
             Assert.That(created.Barcode, Is.EqualTo("5701234567892"));
             Assert.That(created.FileName, Is.EqualTo("sds-a.pdf"));
             Assert.That(created.Name, Is.EqualTo("1 L"));
             Assert.That(created.Checksum, Is.EqualTo("abc"));
-            Assert.That(created.IsActive && created.IsValid && created.Verified, Is.True);
+            Assert.That(created.Verified, Is.True);
         }
 
         [Test]
-        public void NullFeedFileNameAndChecksum_AreStoredAsEmpty()
+        public async Task NullFeedFileNameAndChecksum_AreStoredAsEmpty()
         {
             // Both columns are non-nullable on the tenant DB.
-            var created = ChemicalProductMatcher.CreateFrom(Feed(null, null, checksum: null), ChemicalId);
+            var locals = new List<Product>();
 
-            Assert.That(created.FileName, Is.EqualTo(""));
-            Assert.That(created.Checksum, Is.EqualTo(""));
+            await Sync(new[] { Feed(null, null, checksum: null) }, locals);
+
+            Assert.That(locals.Single().FileName, Is.EqualTo(""));
+            Assert.That(locals.Single().Checksum, Is.EqualTo(""));
         }
 
         [Test]
-        public void SecondRun_IsIdempotent()
+        public async Task SecondRun_IsIdempotent()
         {
+            // 4 locals + 6 feed products: 3 feed products match (1, 2, 3), local 4 stays untouched,
+            // and 3 are created (two sds-c rows and the barcoded no-SDS row, since the only
+            // placeholder is taken by the pure placeholder) = 7 rows.
             var locals = new List<Product>
             {
                 LocalRow(1, null, "sds-a.pdf", "1 L"),
@@ -420,9 +587,9 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Feed("5701234567885", EmptyFileMd5)
             };
 
-            var firstWrites = Sync(feed, locals);
+            var firstWrites = await Sync(feed, locals);
             var snapshot = locals.Select(x => (x.Id, x.Barcode, x.FileName, x.Name)).ToList();
-            var secondWrites = Sync(feed, locals);
+            var secondWrites = await Sync(feed, locals);
 
             Assert.That(firstWrites, Is.GreaterThan(0));
             Assert.That(secondWrites, Is.EqualTo(0));
@@ -437,11 +604,8 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var b = LocalRow(2, null, "sds-a.pdf");
             var feed = new[] { Feed(null, "sds-a.pdf", "first") };
 
-            var forward = ChemicalProductMatcher.Match(feed, new[] { a, b });
-            var reversed = ChemicalProductMatcher.Match(feed, new[] { b, a });
-
-            Assert.That(forward.Single().Local?.Id, Is.EqualTo(1));
-            Assert.That(reversed.Single().Local?.Id, Is.EqualTo(1));
+            Assert.That(MatchedIds(feed, new[] { a, b }), Is.EqualTo(new int?[] { 1 }));
+            Assert.That(MatchedIds(feed, new[] { b, a }), Is.EqualTo(new int?[] { 1 }));
         }
 
         [Test]
