@@ -421,6 +421,21 @@ public class SearchListJob : IJob
                 break;
             case 9:
             {
+                // #1325 — runs before the movement flag check below: retracting the
+                // device case of missed hidden-overdue occurrences is not gated by it.
+                try
+                {
+                    Log.LogEvent("info: SearchListJob.Task: SearchListJob.Execute got called in the 9 UTC hour - retract hidden overdue cases");
+                    await new HiddenOverdueCaseRetractor(_backendConfigurationDbContext, _sdkDbContext, _core)
+                        .RetractAsync(DateTime.UtcNow);
+                }
+                catch (Exception retractException)
+                {
+                    Log.LogException(
+                        $"SearchListJob.Task: case 9 (retract hidden overdue cases) failed: {retractException.Message}");
+                    SentrySdk.CaptureException(retractException);
+                }
+
                 /* Find all compliances which have expired today and we have call sdk and move the eform from the current folder to the expired folder
                  * also we need to set the ignore_end_date, when doing the call.
                  * The expired folder is found by looking at the area rule -> area -> expired folder
