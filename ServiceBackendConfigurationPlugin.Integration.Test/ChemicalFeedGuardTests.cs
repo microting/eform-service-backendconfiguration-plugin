@@ -77,20 +77,24 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         {
             public readonly ConcurrentBag<string> Upserted = new();
             public readonly List<IReadOnlySet<string>> RemoveCalls = new();
-            public int CountCalls;
+            public int LoadCalls;
 
+            /// <param name="localActiveCount">Local active chemicals "remote-1".."remote-N",
+            /// unless <paramref name="localRemoteIds"/> is given.</param>
             public Task<ChemicalSyncOutcome> Run(
                 string body,
                 HttpStatusCode status = HttpStatusCode.OK,
                 int localActiveCount = HealthyLocalCount,
-                Func<Chemical, ValueTask> upsert = null)
+                Func<Chemical, ValueTask> upsert = null,
+                IReadOnlyCollection<string> localRemoteIds = null)
             {
+                localRemoteIds ??= Enumerable.Range(1, localActiveCount).Select(n => $"remote-{n}").ToList();
                 return ChemicalFeedGuard.RunAsync(
                     () => Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) }),
                     () =>
                     {
-                        Interlocked.Increment(ref CountCalls);
-                        return Task.FromResult(localActiveCount);
+                        Interlocked.Increment(ref LoadCalls);
+                        return Task.FromResult(localRemoteIds);
                     },
                     async (chemical, _) =>
                     {
@@ -125,7 +129,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 
             Assert.That(harness.Upserted, Is.Empty);
             Assert.That(harness.RemoveCalls, Is.Empty);
-            Assert.That(harness.CountCalls, Is.Zero);
+            Assert.That(harness.LoadCalls, Is.Zero);
             Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.HttpFailure));
         }
 
@@ -231,6 +235,77 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 
             Assert.That(harness.Upserted, Has.Count.EqualTo(300));
             Assert.That(harness.RemoveCalls.Single(), Has.Count.EqualTo(300));
+        }
+
+        // ---- RunAsync: mass-removal guard ---------------------------------
+
+        private static IEnumerable<string> Ids(string prefix, int from, int count) =>
+            Enumerable.Range(from, count).Select(n => $"{prefix}-{n}");
+
+        [Test]
+        public async Task RightSizedFeedWithDisjointRemoteIds_NeverRemoves()
+        {
+            var harness = new Harness();
+
+            var outcome = await harness.Run(FeedJson(Ids("other", 1, 1000)), localActiveCount: 1000);
+
+            Assert.That(harness.RemoveCalls, Is.Empty);
+            Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.MassRemoval));
+            Assert.That(outcome.Decision.ApplyUpserts, Is.True);
+        }
+
+        [Test]
+        public async Task FeedMissing49PercentOfLocal_Removes()
+        {
+            var harness = new Harness();
+            var feed = Ids("remote", 1, 510).Concat(Ids("other", 1, 490));
+
+            var outcome = await harness.Run(FeedJson(feed), localActiveCount: 1000);
+
+            Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.None));
+            Assert.That(harness.RemoveCalls, Has.Count.EqualTo(1));
+        }
+
+        [Test]
+        public async Task FeedMissing51PercentOfLocal_NeverRemoves()
+        {
+            var harness = new Harness();
+            var feed = Ids("remote", 1, 490).Concat(Ids("other", 1, 510));
+
+            var outcome = await harness.Run(FeedJson(feed), localActiveCount: 1000);
+
+            Assert.That(harness.RemoveCalls, Is.Empty);
+            Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.MassRemoval));
+        }
+
+        [Test]
+        public void RemovingExactlyHalf_IsAllowed_OneMoreIsMassRemoval()
+        {
+            var local = ChemicalFeedGuard.RatioCheckMinimumLocalCount * 10;
+            var half = (int)(local * ChemicalFeedGuard.MaximumRemovalRatio);
+
+            Assert.That(ChemicalFeedGuard.Decide(feedRows: local, feedRemoteIds: local, localActiveCount: local, plannedRemovals: half).ApplyRemovals, Is.True);
+            Assert.That(ChemicalFeedGuard.Decide(feedRows: local, feedRemoteIds: local, localActiveCount: local, plannedRemovals: half + 1).Skip, Is.EqualTo(ChemicalSyncSkip.MassRemoval));
+        }
+
+        [Test]
+        public void SmallTenantBelowRatioCheckMinimum_MayRemoveMostChemicals()
+        {
+            var local = ChemicalFeedGuard.RatioCheckMinimumLocalCount - 1;
+
+            Assert.That(ChemicalFeedGuard.Decide(feedRows: 10, feedRemoteIds: 10, localActiveCount: local, plannedRemovals: local - 1).ApplyRemovals, Is.True);
+        }
+
+        [Test]
+        public async Task LocalsWithoutRemoteId_DoNotCountTowardsMassRemoval()
+        {
+            var harness = new Harness();
+            var locals = Ids("remote", 1, 500).Concat(Enumerable.Repeat<string>(null, 500)).ToList();
+
+            var outcome = await harness.Run(FeedJson(Ids("remote", 1, 500)), localRemoteIds: locals);
+
+            Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.None));
+            Assert.That(outcome.PlannedRemovals, Is.Zero);
         }
 
         // ---- RemoteId comparison matches the DB collation (case-insensitive, trimmed)

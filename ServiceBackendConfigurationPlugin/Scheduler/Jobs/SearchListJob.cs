@@ -101,7 +101,7 @@ public class SearchListJob : IJob
                     using var client = new HttpClient();
                     var outcome = await ChemicalFeedGuard.RunAsync(
                         () => client.GetAsync(url),
-                        CountActiveLocalChemicals,
+                        LoadActiveLocalRemoteIds,
                         UpsertChemical,
                         RemoveChemicalsMissingFromFeed,
                         new ParallelOptions { MaxDegreeOfParallelism = -1 }).ConfigureAwait(false);
@@ -745,11 +745,13 @@ public class SearchListJob : IJob
     }
 
 
-    private async Task<int> CountActiveLocalChemicals()
+    private async Task<IReadOnlyCollection<string>> LoadActiveLocalRemoteIds()
     {
         await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
         return await chemicalsDbContext.Chemicals
-            .CountAsync(x => x.WorkflowState != Constants.WorkflowStates.Removed).ConfigureAwait(false);
+            .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+            .Select(x => x.RemoteId)
+            .ToListAsync().ConfigureAwait(false);
     }
 
     /// <summary>Upserts one feed chemical, matched on RemoteId (see ChemicalFeedGuard).</summary>

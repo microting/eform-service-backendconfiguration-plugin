@@ -49,7 +49,9 @@ public enum ChemicalSyncSkip
     /// <summary>The feed was <c>[]</c>: removals skipped.</summary>
     EmptyFeed,
     /// <summary>Too few distinct RemoteIds for this tenant: removals skipped.</summary>
-    PartialFeed
+    PartialFeed,
+    /// <summary>The feed would remove too many local chemicals: removals skipped.</summary>
+    MassRemoval
 }
 
 /// <summary>What the 02:00 chemical register sync may apply this run.</summary>
@@ -57,7 +59,8 @@ public sealed record ChemicalSyncDecision(bool ApplyUpserts, bool ApplyRemovals,
 
 /// <summary>Result of one <see cref="ChemicalFeedGuard.RunAsync"/>; counts are null when not reached.</summary>
 public sealed record ChemicalSyncOutcome(
-    ChemicalSyncDecision Decision, HttpStatusCode StatusCode, int? FeedRows, int FeedRemoteIds, int? LocalActiveCount);
+    ChemicalSyncDecision Decision, HttpStatusCode StatusCode, int? FeedRows, int FeedRemoteIds, int? LocalActiveCount,
+    int? PlannedRemovals = null);
 
 /// <summary>
 /// Guards the 02:00 UTC "chemicalbase updates" step in <c>SearchListJob</c>.
@@ -73,6 +76,11 @@ public static class ChemicalFeedGuard
     /// current non-removed chemicals is treated as partial: removals skipped.
     /// </summary>
     public const double MinimumFeedToLocalRatio = 0.5;
+
+    /// <summary>
+    /// RED stub (round 3): not enforced yet.
+    /// </summary>
+    public const double MaximumRemovalRatio = 0.5;
 
     /// <summary>The ratio check only applies from this many local chemicals.</summary>
     public const int RatioCheckMinimumLocalCount = 100;
@@ -95,12 +103,12 @@ public static class ChemicalFeedGuard
     /// ever called after every upsert succeeded, and only when
     /// <see cref="Decide"/> allows removals. Exceptions propagate.
     /// </summary>
-    /// <param name="countLocalActive">Non-removed local chemicals; called before any upsert.</param>
+    /// <param name="loadActiveLocalRemoteIds">RemoteIds of the non-removed local chemicals (null for local-only rows); called before any upsert.</param>
     /// <param name="upsertOne">Called in parallel once per distinct feed RemoteId (trimmed, case-insensitive); the chemical carries the trimmed RemoteId.</param>
     /// <param name="removeMissing">Receives the feed's full RemoteId set.</param>
     public static async Task<ChemicalSyncOutcome> RunAsync(
         Func<Task<HttpResponseMessage>> fetch,
-        Func<Task<int>> countLocalActive,
+        Func<Task<IReadOnlyCollection<string>>> loadActiveLocalRemoteIds,
         Func<Chemical, CancellationToken, ValueTask> upsertOne,
         Func<IReadOnlySet<string>, Task> removeMissing,
         ParallelOptions parallelOptions)
@@ -131,7 +139,7 @@ public static class ChemicalFeedGuard
         {
             chemical.RemoteId = chemical.RemoteId.Trim();
         }
-        var localActiveCount = await countLocalActive().ConfigureAwait(false);
+        var localActiveCount = (await loadActiveLocalRemoteIds().ConfigureAwait(false)).Count;
         var decision = Decide(feed.Count, keyed.Count, localActiveCount);
 
         if (decision.ApplyUpserts)
@@ -150,7 +158,7 @@ public static class ChemicalFeedGuard
     /// <param name="feedRows">Parsed feed rows, or null when the body held no list.</param>
     /// <param name="feedRemoteIds">Distinct non-empty RemoteIds in the feed.</param>
     /// <param name="localActiveCount">Non-removed local chemicals, counted before any upsert.</param>
-    public static ChemicalSyncDecision Decide(int? feedRows, int feedRemoteIds, int localActiveCount)
+    public static ChemicalSyncDecision Decide(int? feedRows, int feedRemoteIds, int localActiveCount, int plannedRemovals = 0)
     {
         if (feedRows == null)
         {
