@@ -116,6 +116,30 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             Assert.That(HiddenOverdueCaseRetractor.MayStartDelete(microtingUid, running), Is.EqualTo(expected));
         }
 
+        /// <summary>
+        /// A cloud case whose delete timed out goes last (the longest-ago timeout first), so it
+        /// cannot hold back the other cloud cases day after day; the rest keep their order.
+        /// </summary>
+        [Test]
+        public void CloudCasesThatTimedOut_AreTriedLast()
+        {
+            // Selection order deliberately not by id; case 14 is local-only (no MicrotingUid).
+            var cases = new[] { Case(13), Case(10), new CaseRow(14, null, 66, null, Constants.WorkflowStates.Created, 1), Case(12), Case(11) };
+            var candidates = cases
+                .Select(c => new HiddenOverdueCaseRetractor.RetractionCandidate(c.Id, Yesterday, c, "missed"))
+                .ToList();
+            var timedOutAt = new Dictionary<int, DateTime>
+            {
+                [Case(10).MicrotingUid!.Value] = Today.AddHours(-1),
+                [Case(11).MicrotingUid!.Value] = Today.AddDays(-1)
+            };
+
+            var ordered = HiddenOverdueCaseRetractor.OrderForRetraction(candidates, timedOutAt)
+                .Select(x => x.Case.Id);
+
+            Assert.That(ordered, Is.EqualTo(new[] { 13, 14, 12, 11, 10 }));
+        }
+
         [Test]
         public void AlreadyRemovedOrRetractedCase_IsNotSelected()
         {

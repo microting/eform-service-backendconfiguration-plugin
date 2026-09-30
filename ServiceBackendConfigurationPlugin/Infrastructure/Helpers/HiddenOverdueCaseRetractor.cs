@@ -75,6 +75,12 @@ public class HiddenOverdueCaseRetractor
     // cancelled); no new cloud delete starts while one is still running (MayStartDelete).
     private static readonly ConcurrentDictionary<int, byte> CloudDeletesInFlight = new();
 
+    // MicrotingUids whose cloud delete timed out, with when. Tried last on later runs, so one
+    // case stuck in the SDK's retry path cannot keep every other cloud case waiting (once that
+    // delete has ended — while it runs, the single slot defers every cloud case anyway). Other
+    // failures end quickly and hold no slot, so only timeouts are recorded.
+    private static readonly ConcurrentDictionary<int, DateTime> CloudDeletesTimedOut = new();
+
     // The run shares the hourly timer with the rest of SearchListJob; whatever
     // is left when the budget is spent is picked up by the next daily run.
     private static readonly TimeSpan RunBudget = TimeSpan.FromMinutes(20);
@@ -209,6 +215,20 @@ public class HiddenOverdueCaseRetractor
         return microtingUid is null or >= LocalOnlyMicrotingUidOffset;
     }
 
+    /// <summary>
+    /// The candidates in the order they are tried: cloud cases whose delete timed out before
+    /// go last (the longest-ago timeout first); everything else keeps its selection order.
+    /// </summary>
+    public static List<RetractionCandidate> OrderForRetraction(
+        IEnumerable<RetractionCandidate> candidates, IReadOnlyDictionary<int, DateTime> timedOutAt)
+    {
+        DateTime TimedOutAt(RetractionCandidate c) =>
+            c.Case.MicrotingUid is { } uid && timedOutAt.TryGetValue(uid, out var at) ? at : DateTime.MinValue;
+
+        // OrderBy is stable: the cases that never timed out keep their selection order.
+        return candidates.OrderBy(TimedOutAt).ToList();
+    }
+
     /// <summary>A local-only case can always be removed; a cloud delete starts only while no earlier one is still running.</summary>
     public static bool MayStartDelete(int? microtingUid, int cloudDeletesRunning)
     {
@@ -286,7 +306,8 @@ public class HiddenOverdueCaseRetractor
             }
         }
 
-        var candidates = SelectCasesToRetract(compliances, casesById, todayUtc);
+        var selected = SelectCasesToRetract(compliances, casesById, todayUtc);
+        var candidates = OrderForRetraction(selected, CloudDeletesTimedOut);
         Log.LogEvent(
             $"info: HiddenOverdueCaseRetractor: {compliances.Count} compliances of hidden-overdue tasks reference {allCaseIds.Count} cases; {candidates.Count} live, uncompleted cases to retract");
 
@@ -373,7 +394,14 @@ public class HiddenOverdueCaseRetractor
 
         var cloudDelete = _core.CaseDelete(microtingUid);
         _ = cloudDelete.ContinueWith(
-            _ => CloudDeletesInFlight.TryRemove(microtingUid, out var _),
+            t =>
+            {
+                CloudDeletesInFlight.TryRemove(microtingUid, out var _);
+                if (t.IsCompletedSuccessfully && t.Result)
+                {
+                    CloudDeletesTimedOut.TryRemove(microtingUid, out var _);
+                }
+            },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
@@ -387,6 +415,7 @@ public class HiddenOverdueCaseRetractor
         }
         catch (TimeoutException) when (!cloudDelete.IsCompleted)
         {
+            CloudDeletesTimedOut[microtingUid] = DateTime.UtcNow;
             // The abandoned task must not fault unobserved.
             _ = cloudDelete.ContinueWith(
                 t => Console.WriteLine(
