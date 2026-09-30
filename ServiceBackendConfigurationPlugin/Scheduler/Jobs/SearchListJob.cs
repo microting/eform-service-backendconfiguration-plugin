@@ -29,8 +29,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Entities;
@@ -98,158 +97,15 @@ public class SearchListJob : IJob
                 {
                     Log.LogEvent(
                         "SearchListJob.Task: SearchListJob.Execute got called at 2am - chemicalbase updates");
-                    var url = "https://chemicalbase.microting.com/get-all-chemicals";
-                    var client = new HttpClient();
-                    var response = await client.GetAsync(url).ConfigureAwait(false);
-                    var result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-
-                    JsonSerializerOptions options = new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true,
-                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault
-                    };
-                    List<Chemical> chemicals = JsonSerializer.Deserialize<List<Chemical>>(result, options);
-
-                    List<string> regNos = new List<string>();
-                    if (chemicals != null)
-                    {
-                        int count = chemicals.Count;
-                        int i = 0;
-                        var parallelOptions = new ParallelOptions
-                        {
-                            MaxDegreeOfParallelism = -1
-                        };
-                        // foreach (var chemical in chemicals)
-                        await Parallel.ForEachAsync(chemicals, parallelOptions, async (chemical, ct) =>
-                        {
-                            var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
-                            var c = await chemicalsDbContext.Chemicals
-                                .Include(x => x.Products)
-                                .FirstOrDefaultAsync(x => x.RemoteId == chemical.RemoteId);
-                            regNos.Add(chemical.RegistrationNo);
-                            if (c != null)
-                            {
-                                if (chemical.WorkflowState != Constants.WorkflowStates.Removed)
-                                {
-                                    // Console.WriteLine(
-                                        // $"Chemical already exist, so updating : {chemical.Name} no {i} of {count}");
-                                    c.Use = chemical.Use;
-                                    c.Verified = chemical.Verified;
-                                    c.AuthorisationDate = chemical.AuthorisationDate;
-                                    c.AuthorisationExpirationDate = chemical.AuthorisationExpirationDate;
-                                    c.AuthorisationTerminationDate = chemical.AuthorisationTerminationDate;
-                                    c.UseAndPossesionDeadline = chemical.UseAndPossesionDeadline;
-                                    c.PossessionDeadline = chemical.PossessionDeadline;
-                                    c.SalesDeadline = chemical.SalesDeadline;
-                                    c.Status = chemical.Status;
-                                    c.PesticideUser = chemical.PesticideUser;
-                                    c.FormulationType = chemical.FormulationType;
-                                    c.FormulationSubType = chemical.FormulationSubType;
-                                    c.BiocideAuthorisationType = chemical.BiocideAuthorisationType;
-                                    c.PesticidePossibleUse = chemical.PesticidePossibleUse;
-                                    c.PesticideProductGroup = chemical.PesticideProductGroup;
-                                    c.BiocidePossibleUse = chemical.BiocidePossibleUse;
-                                    c.BiocideSpecialUse = chemical.BiocideSpecialUse;
-                                    c.BiocideProductType = chemical.BiocideProductType;
-                                    c.BiocideUser = chemical.BiocideUser;
-                                    c.PestControlType = chemical.PestControlType;
-                                    c.BarcodeValue = chemical.BarcodeValue;
-                                    c.BiocideProductGroup = chemical.BiocideProductGroup;
-                                    // chemical.Id = c.Id;
-                                    if (!chemicalsDbContext.AuthorisationHolders.Any(x =>
-                                            x.RemoteId == chemical.AuthorisationHolder.RemoteId))
-                                    {
-                                        var ah = new AuthorisationHolder
-                                        {
-                                            RemoteId = chemical.AuthorisationHolder.RemoteId,
-                                            Name = chemical.AuthorisationHolder.Name,
-                                            Address = chemical.AuthorisationHolder.Address
-                                        };
-                                        await ah.Create(chemicalsDbContext).ConfigureAwait(false);
-                                        c.AuthorisationHolderId = ah.Id;
-                                    }
-                                    else
-                                    {
-                                        c.AuthorisationHolderId = chemicalsDbContext.AuthorisationHolders.First(x =>
-                                            x.RemoteId == chemical.AuthorisationHolder.RemoteId).Id;
-                                    }
-
-                                    if (chemical.Products.Count != c.Products.Count)
-                                    {
-                                        foreach (var chemicalProduct in chemical.Products)
-                                        {
-                                            var dbProduct = await chemicalsDbContext.Products.FirstOrDefaultAsync(
-                                                x =>
-                                                    x.ChemicalId == c.Id && x.FileName == chemicalProduct.FileName);
-                                            if (dbProduct == null)
-                                            {
-                                                dbProduct = new Product
-                                                {
-                                                    FileName = chemicalProduct.FileName,
-                                                    Barcode = chemicalProduct.Barcode,
-                                                    ChemicalId = c.Id,
-                                                    Checksum = ""
-                                                };
-                                                await dbProduct.Create(chemicalsDbContext);
-                                            }
-                                            else
-                                            {
-                                                dbProduct.Barcode = chemicalProduct.Barcode;
-                                                dbProduct.Name = chemicalProduct.Name;
-                                                dbProduct.Checksum = chemicalProduct.Checksum;
-                                                await dbProduct.Update(chemicalsDbContext);
-                                            }
-                                        }
-                                    }
-                                    else
-                                    {
-                                        foreach (var cProduct in c.Products)
-                                        {
-                                            var dbProduct =
-                                                await chemicalsDbContext.Products.FirstAsync(x =>
-                                                    x.Id == cProduct.Id);
-                                            foreach (var chemicalProduct in chemical.Products)
-                                            {
-                                                if (chemicalProduct.Name == cProduct.Name)
-                                                {
-                                                    dbProduct.FileName = chemicalProduct.FileName;
-                                                    dbProduct.Barcode = chemicalProduct.Barcode;
-                                                    await dbProduct.Update(chemicalsDbContext);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    await c.Update(chemicalsDbContext).ConfigureAwait(false);
-                                }
-                                else
-                                {
-                                    Console.WriteLine(
-                                        $"info: Chemical is removed so skipping : {chemical.Name} no {i} of {count}");
-                                }
-                            }
-                            else
-                            {
-                                Console.WriteLine(
-                                    $"info: Chemical does not exist, so creating : {chemical.Name} no {i} of {count}");
-                                await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
-                            }
-
-                            i++;
-                        });
-
-                        var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
-                        var toBeRemoved = await chemicalsDbContext.Chemicals
-                            .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
-                            .Where(x => !regNos.Contains(x.RegistrationNo)).ToListAsync();
-
-                        foreach (var chemical in toBeRemoved)
-                        {
-                            Console.WriteLine($@"info: Deleting chemical: {chemical.Name}");
-                            await chemical.Delete(chemicalsDbContext);
-                        }
-
-                    }
+                    const string url = "https://chemicalbase.microting.com/get-all-chemicals";
+                    using var client = new HttpClient();
+                    var outcome = await ChemicalFeedGuard.RunAsync(
+                        () => client.GetAsync(url),
+                        LoadActiveLocalRemoteIds,
+                        UpsertChemical,
+                        RemoveChemicalsMissingFromFeed,
+                        new ParallelOptions { MaxDegreeOfParallelism = -1 }).ConfigureAwait(false);
+                    ReportChemicalSync(outcome);
                 }
                 catch (Exception e)
                 {
@@ -886,6 +742,194 @@ public class SearchListJob : IJob
             Console.WriteLine($"fail: {e.StackTrace}");
             SentrySdk.CaptureException(e);
         }
+    }
+
+
+    private async Task<IReadOnlyCollection<string>> LoadActiveLocalRemoteIds()
+    {
+        await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
+        return await chemicalsDbContext.Chemicals
+            .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+            .Select(x => x.RemoteId)
+            .ToListAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Upserts one feed chemical, matched on RemoteId (see ChemicalFeedGuard).</summary>
+    private async ValueTask UpsertChemical(Chemical chemical, CancellationToken ct)
+    {
+        await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
+        var localRows = await chemicalsDbContext.Chemicals
+            .Include(x => x.Products)
+            .Where(x => x.RemoteId == chemical.RemoteId)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var c = ChemicalFeedGuard.PickLocalMatch(localRows);
+        if (c == null)
+        {
+            Console.WriteLine($"info: Chemical does not exist, so creating : {chemical.Name}");
+            await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
+            return;
+        }
+
+        if (ChemicalFeedGuard.TryRestore(c))
+        {
+            Console.WriteLine($"info: Chemical was removed locally but is in the feed again, restoring : {chemical.Name}");
+        }
+
+        // Keys and names follow the feed, so a changed RegistrationNo never leaves a stale
+        // local value behind. Blank feed values never overwrite local ones.
+        if (!string.IsNullOrEmpty(chemical.RegistrationNo))
+        {
+            c.RegistrationNo = chemical.RegistrationNo;
+        }
+
+        if (!string.IsNullOrEmpty(chemical.Name))
+        {
+            c.Name = chemical.Name;
+        }
+
+        c.Use = chemical.Use;
+        c.Verified = chemical.Verified;
+        c.AuthorisationDate = chemical.AuthorisationDate;
+        c.AuthorisationExpirationDate = chemical.AuthorisationExpirationDate;
+        c.AuthorisationTerminationDate = chemical.AuthorisationTerminationDate;
+        c.UseAndPossesionDeadline = chemical.UseAndPossesionDeadline;
+        c.PossessionDeadline = chemical.PossessionDeadline;
+        c.SalesDeadline = chemical.SalesDeadline;
+        c.Status = chemical.Status;
+        c.PesticideUser = chemical.PesticideUser;
+        c.FormulationType = chemical.FormulationType;
+        c.FormulationSubType = chemical.FormulationSubType;
+        c.BiocideAuthorisationType = chemical.BiocideAuthorisationType;
+        c.PesticidePossibleUse = chemical.PesticidePossibleUse;
+        c.PesticideProductGroup = chemical.PesticideProductGroup;
+        c.BiocidePossibleUse = chemical.BiocidePossibleUse;
+        c.BiocideSpecialUse = chemical.BiocideSpecialUse;
+        c.BiocideProductType = chemical.BiocideProductType;
+        c.BiocideUser = chemical.BiocideUser;
+        c.PestControlType = chemical.PestControlType;
+        c.BarcodeValue = chemical.BarcodeValue;
+        c.BiocideProductGroup = chemical.BiocideProductGroup;
+        if (!chemicalsDbContext.AuthorisationHolders.Any(x =>
+                x.RemoteId == chemical.AuthorisationHolder.RemoteId))
+        {
+            var ah = new AuthorisationHolder
+            {
+                RemoteId = chemical.AuthorisationHolder.RemoteId,
+                Name = chemical.AuthorisationHolder.Name,
+                Address = chemical.AuthorisationHolder.Address
+            };
+            await ah.Create(chemicalsDbContext).ConfigureAwait(false);
+            c.AuthorisationHolderId = ah.Id;
+        }
+        else
+        {
+            c.AuthorisationHolderId = chemicalsDbContext.AuthorisationHolders.First(x =>
+                x.RemoteId == chemical.AuthorisationHolder.RemoteId).Id;
+        }
+
+        if (chemical.Products.Count != c.Products.Count)
+        {
+            foreach (var chemicalProduct in chemical.Products)
+            {
+                var dbProduct = await chemicalsDbContext.Products.FirstOrDefaultAsync(
+                    x =>
+                        x.ChemicalId == c.Id && x.FileName == chemicalProduct.FileName);
+                if (dbProduct == null)
+                {
+                    dbProduct = new Product
+                    {
+                        FileName = chemicalProduct.FileName,
+                        Barcode = chemicalProduct.Barcode,
+                        ChemicalId = c.Id,
+                        Checksum = ""
+                    };
+                    await dbProduct.Create(chemicalsDbContext);
+                }
+                else
+                {
+                    dbProduct.Barcode = chemicalProduct.Barcode;
+                    dbProduct.Name = chemicalProduct.Name;
+                    dbProduct.Checksum = chemicalProduct.Checksum;
+                    await dbProduct.Update(chemicalsDbContext);
+                }
+            }
+        }
+        else
+        {
+            foreach (var cProduct in c.Products)
+            {
+                var dbProduct =
+                    await chemicalsDbContext.Products.FirstAsync(x =>
+                        x.Id == cProduct.Id);
+                foreach (var chemicalProduct in chemical.Products)
+                {
+                    if (chemicalProduct.Name == cProduct.Name)
+                    {
+                        dbProduct.FileName = chemicalProduct.FileName;
+                        dbProduct.Barcode = chemicalProduct.Barcode;
+                        await dbProduct.Update(chemicalsDbContext);
+                    }
+                }
+            }
+        }
+
+        await c.Update(chemicalsDbContext).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Soft-deletes active local chemicals whose RemoteId is not in the feed. Only reached when
+    /// ChemicalFeedGuard accepted the feed; local rows without a RemoteId are never removed.
+    /// </summary>
+    private async Task RemoveChemicalsMissingFromFeed(IReadOnlySet<string> feedRemoteIds)
+    {
+        await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
+        var activeLocals = await chemicalsDbContext.Chemicals
+            .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+            .ToListAsync().ConfigureAwait(false);
+
+        var unkeyed = activeLocals.Count(x => string.IsNullOrWhiteSpace(x.RemoteId));
+        if (unkeyed > 0)
+        {
+            Log.LogEvent(
+                $"SearchListJob.Task: chemicalbase updates - {unkeyed} local chemical(s) without RemoteId are kept (never removed by the sync)");
+        }
+
+        foreach (var chemical in ChemicalFeedGuard.SelectToRemove(feedRemoteIds, activeLocals))
+        {
+            Console.WriteLine($@"info: Deleting chemical: {chemical.Name}");
+            await chemical.Delete(chemicalsDbContext).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Logs every run; reports skipped runs to Sentry under one constant message and a per-skip
+    /// fingerprint, so all tenants group into one issue. An outage (HTTP failure, no or empty feed)
+    /// is a Warning; a partial feed or a mass removal is an Error.
+    /// </summary>
+    private static void ReportChemicalSync(ChemicalSyncOutcome outcome)
+    {
+        var skip = outcome.Decision.Skip;
+        var counts =
+            $"HTTP {(int)outcome.StatusCode}, feed rows {outcome.FeedRows?.ToString() ?? "n/a"}, feed RemoteIds {outcome.FeedRemoteIds}, local active {outcome.LocalActiveCount?.ToString() ?? "n/a"}, planned removals {outcome.PlannedRemovals?.ToString() ?? "n/a"}";
+        if (skip == ChemicalSyncSkip.None)
+        {
+            Log.LogEvent($"SearchListJob.Task: chemicalbase updates applied ({counts})");
+            return;
+        }
+
+        var skipped = outcome.Decision.ApplyUpserts ? "removals" : "all changes";
+        Log.LogEvent($"SearchListJob.Task: chemicalbase updates - {skip}, {skipped} skipped ({counts})");
+        SentrySdk.CaptureMessage("SearchListJob chemicalbase sync: register changes skipped", scope =>
+            {
+                scope.SetFingerprint(new[] { "chemicalbase-sync-skipped", skip.ToString() });
+                scope.SetTag("chemical_sync_skip", skip.ToString());
+                scope.SetExtra("httpStatus", (int)outcome.StatusCode);
+                scope.SetExtra("feedRows", outcome.FeedRows);
+                scope.SetExtra("feedRemoteIds", outcome.FeedRemoteIds);
+                scope.SetExtra("localActiveCount", outcome.LocalActiveCount);
+                scope.SetExtra("plannedRemovals", outcome.PlannedRemovals);
+            },
+            skip is ChemicalSyncSkip.PartialFeed or ChemicalSyncSkip.MassRemoval ? SentryLevel.Error : SentryLevel.Warning);
     }
 
     private async Task<string> GenerateDocumentList(List<DocumentProperty> documentProperties,
