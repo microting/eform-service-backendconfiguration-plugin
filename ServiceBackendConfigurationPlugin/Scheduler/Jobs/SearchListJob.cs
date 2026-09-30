@@ -827,22 +827,11 @@ public class SearchListJob : IJob
                 x.RemoteId == chemical.AuthorisationHolder.RemoteId).Id;
         }
 
-        // Products carry no id in the feed: match by barcode, then SDS file name, then placeholder
-        // (see ChemicalProductMatcher). Local products the feed no longer lists are left untouched.
-        // Updates are saved before creates, so each update gets its own version row.
-        var matches = ChemicalProductMatcher.Match(chemical.Products?.ToList() ?? [], c.Products.ToList());
-        foreach (var match in matches.Where(x => x.Local != null))
-        {
-            if (ChemicalProductMatcher.Apply(match.Feed, match.Local))
-            {
-                await match.Local.Update(chemicalsDbContext).ConfigureAwait(false);
-            }
-        }
-
-        foreach (var match in matches.Where(x => x.Local == null))
-        {
-            await ChemicalProductMatcher.CreateFrom(match.Feed, c.Id).Create(chemicalsDbContext).ConfigureAwait(false);
-        }
+        // Products carry no id in the feed: see ChemicalProductMatcher for how they are matched.
+        // Local products the feed no longer lists are left untouched.
+        await ChemicalProductMatcher.ReconcileAsync(chemical.Products?.ToList() ?? [], c.Products, c.Id,
+            product => product.Update(chemicalsDbContext),
+            product => product.Create(chemicalsDbContext)).ConfigureAwait(false);
 
         await c.Update(chemicalsDbContext).ConfigureAwait(false);
     }
