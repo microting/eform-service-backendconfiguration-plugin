@@ -31,6 +31,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Entities;
@@ -101,17 +102,35 @@ public class SearchListJob : IJob
                     var url = "https://chemicalbase.microting.com/get-all-chemicals";
                     var client = new HttpClient();
                     var response = await client.GetAsync(url).ConfigureAwait(false);
-                    var result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-                    JsonSerializerOptions options = new JsonSerializerOptions
+                    // A non-2xx response is never parsed and never reaches the upsert or
+                    // removal phases (see ChemicalFeedGuard).
+                    List<Chemical> chemicals = null;
+                    if (response.IsSuccessStatusCode)
                     {
-                        PropertyNameCaseInsensitive = true,
-                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault
-                    };
-                    List<Chemical> chemicals = JsonSerializer.Deserialize<List<Chemical>>(result, options);
+                        var result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        JsonSerializerOptions options = new JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true,
+                            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault
+                        };
+                        chemicals = JsonSerializer.Deserialize<List<Chemical>>(result, options);
+                    }
 
-                    List<string> regNos = new List<string>();
-                    if (chemicals != null)
+                    // Counted before any upsert, so the partial-feed guard compares the feed
+                    // with what the tenant held going into this run.
+                    var localActiveCount = await _chemicalDbContextHelper.GetDbContext().Chemicals
+                        .CountAsync(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+                        .ConfigureAwait(false);
+                    var decision = ChemicalFeedGuard.Decide(response.StatusCode, chemicals?.Count, localActiveCount);
+                    if (!decision.ApplyRemovals)
+                    {
+                        Log.LogException($"SearchListJob.Task: chemicalbase updates - {decision.Reason}");
+                        SentrySdk.CaptureMessage($"SearchListJob chemicalbase updates: {decision.Reason}",
+                            SentryLevel.Error);
+                    }
+
+                    if (decision.ApplyUpserts)
                     {
                         int count = chemicals.Count;
                         int i = 0;
@@ -119,18 +138,22 @@ public class SearchListJob : IJob
                         {
                             MaxDegreeOfParallelism = -1
                         };
-                        // foreach (var chemical in chemicals)
-                        await Parallel.ForEachAsync(chemicals, parallelOptions, async (chemical, ct) =>
+                        var regNos = await ChemicalFeedGuard.ProcessFeedAsync(chemicals, async (chemical, ct) =>
                         {
                             var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
                             var c = await chemicalsDbContext.Chemicals
                                 .Include(x => x.Products)
                                 .FirstOrDefaultAsync(x => x.RemoteId == chemical.RemoteId);
-                            regNos.Add(chemical.RegistrationNo);
                             if (c != null)
                             {
                                 if (chemical.WorkflowState != Constants.WorkflowStates.Removed)
                                 {
+                                    if (ChemicalFeedGuard.TryRestore(c, chemical))
+                                    {
+                                        Console.WriteLine(
+                                            $"info: Chemical was removed locally but is in the feed again, restoring : {chemical.Name}");
+                                    }
+
                                     // Console.WriteLine(
                                         // $"Chemical already exist, so updating : {chemical.Name} no {i} of {count}");
                                     c.Use = chemical.Use;
@@ -235,20 +258,28 @@ public class SearchListJob : IJob
                                 await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
                             }
 
-                            i++;
-                        });
+                            Interlocked.Increment(ref i);
+                        }, parallelOptions).ConfigureAwait(false);
 
-                        var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
-                        var toBeRemoved = await chemicalsDbContext.Chemicals
-                            .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
-                            .Where(x => !regNos.Contains(x.RegistrationNo)).ToListAsync();
-
-                        foreach (var chemical in toBeRemoved)
+                        if (decision.ApplyRemovals)
                         {
-                            Console.WriteLine($@"info: Deleting chemical: {chemical.Name}");
-                            await chemical.Delete(chemicalsDbContext);
-                        }
+                            var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
+                            var activeLocals = await chemicalsDbContext.Chemicals
+                                .AsNoTracking()
+                                .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
+                                .Select(x => new { x.Id, x.RegistrationNo })
+                                .ToListAsync().ConfigureAwait(false);
+                            var idsToRemove = ChemicalFeedGuard.SelectIdsToRemove(
+                                regNos, activeLocals.Select(x => (x.Id, x.RegistrationNo)));
+                            var toBeRemoved = await chemicalsDbContext.Chemicals
+                                .Where(x => idsToRemove.Contains(x.Id)).ToListAsync().ConfigureAwait(false);
 
+                            foreach (var chemical in toBeRemoved)
+                            {
+                                Console.WriteLine($@"info: Deleting chemical: {chemical.Name}");
+                                await chemical.Delete(chemicalsDbContext);
+                            }
+                        }
                     }
                 }
                 catch (Exception e)
