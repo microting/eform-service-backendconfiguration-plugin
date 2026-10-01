@@ -150,7 +150,7 @@ public class Core : ISdkEventHandler
             // A Sentry Data Source Name (DSN) is required.
             // See https://docs.sentry.io/product/sentry-basics/dsn-explainer/
             // You can set it in the SENTRY_DSN environment variable, or you can set it in code here.
-            options.Dsn = "https://5b67d97e4f88df38b0bbfcd8ed3b9a65@o4506241219428352.ingest.us.sentry.io/4508153878282240";
+            options.Dsn = "https://5b67d97e4f88df38b0bbfcd8ed3b9a65@o4506241219428352.ingest.sentry.io/4508153878282240";
 
             // When debug is enabled, the Sentry client will emit detailed debugging information to the console.
             // This might be helpful, or might interfere with the normal operation of your application.
