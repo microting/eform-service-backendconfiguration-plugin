@@ -827,51 +827,11 @@ public class SearchListJob : IJob
                 x.RemoteId == chemical.AuthorisationHolder.RemoteId).Id;
         }
 
-        if (chemical.Products.Count != c.Products.Count)
-        {
-            foreach (var chemicalProduct in chemical.Products)
-            {
-                var dbProduct = await chemicalsDbContext.Products.FirstOrDefaultAsync(
-                    x =>
-                        x.ChemicalId == c.Id && x.FileName == chemicalProduct.FileName);
-                if (dbProduct == null)
-                {
-                    dbProduct = new Product
-                    {
-                        FileName = chemicalProduct.FileName,
-                        Barcode = chemicalProduct.Barcode,
-                        ChemicalId = c.Id,
-                        Checksum = ""
-                    };
-                    await dbProduct.Create(chemicalsDbContext);
-                }
-                else
-                {
-                    dbProduct.Barcode = chemicalProduct.Barcode;
-                    dbProduct.Name = chemicalProduct.Name;
-                    dbProduct.Checksum = chemicalProduct.Checksum;
-                    await dbProduct.Update(chemicalsDbContext);
-                }
-            }
-        }
-        else
-        {
-            foreach (var cProduct in c.Products)
-            {
-                var dbProduct =
-                    await chemicalsDbContext.Products.FirstAsync(x =>
-                        x.Id == cProduct.Id);
-                foreach (var chemicalProduct in chemical.Products)
-                {
-                    if (chemicalProduct.Name == cProduct.Name)
-                    {
-                        dbProduct.FileName = chemicalProduct.FileName;
-                        dbProduct.Barcode = chemicalProduct.Barcode;
-                        await dbProduct.Update(chemicalsDbContext);
-                    }
-                }
-            }
-        }
+        // Products carry no id in the feed: see ChemicalProductMatcher for how they are matched.
+        // Local products the feed no longer lists are left untouched.
+        await ChemicalProductMatcher.ReconcileAsync(chemical.Products?.ToList() ?? [], c.Products, c.Id,
+            product => product.Update(chemicalsDbContext),
+            product => product.Create(chemicalsDbContext)).ConfigureAwait(false);
 
         await c.Update(chemicalsDbContext).ConfigureAwait(false);
     }
