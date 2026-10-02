@@ -142,7 +142,10 @@ public static class ChemicalFeedGuard
             chemical.RemoteId = chemical.RemoteId.Trim();
         }
         var feedKeys = FeedKeys(keyed.Select(x => x.RemoteId));
-        var localRemoteIds = await loadActiveLocalRemoteIds().ConfigureAwait(false);
+        // Only keyed locals take part in the ratios: unkeyed rows are never matched or removed.
+        var localRemoteIds = (await loadActiveLocalRemoteIds().ConfigureAwait(false))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
         var plannedRemovals = localRemoteIds.Count(x => IsMissing(x, feedKeys));
         var decision = Decide(feed.Count, keyed.Count, localRemoteIds.Count, plannedRemovals);
 
@@ -205,16 +208,16 @@ public static class ChemicalFeedGuard
 
     /// <summary>
     /// Copies the feed's RegistrationNo and Name onto <paramref name="local"/>.
-    /// A blank feed value never overwrites a local one.
+    /// A blank (null, empty or whitespace-only) feed value never overwrites a local one.
     /// </summary>
     public static void CopyIdentity(Chemical local, Chemical feed)
     {
-        if (!string.IsNullOrEmpty(feed.RegistrationNo))
+        if (!string.IsNullOrWhiteSpace(feed.RegistrationNo))
         {
             local.RegistrationNo = feed.RegistrationNo;
         }
 
-        if (!string.IsNullOrEmpty(feed.Name))
+        if (!string.IsNullOrWhiteSpace(feed.Name))
         {
             local.Name = feed.Name;
         }
