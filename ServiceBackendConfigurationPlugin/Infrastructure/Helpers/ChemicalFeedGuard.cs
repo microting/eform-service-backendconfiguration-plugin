@@ -203,6 +203,23 @@ public static class ChemicalFeedGuard
         return activeLocals.Where(x => IsMissing(x.RemoteId, feedKeys)).ToList();
     }
 
+    /// <summary>
+    /// Copies the feed's RegistrationNo and Name onto <paramref name="local"/>.
+    /// A blank feed value never overwrites a local one.
+    /// </summary>
+    public static void CopyIdentity(Chemical local, Chemical feed)
+    {
+        if (!string.IsNullOrEmpty(feed.RegistrationNo))
+        {
+            local.RegistrationNo = feed.RegistrationNo;
+        }
+
+        if (!string.IsNullOrEmpty(feed.Name))
+        {
+            local.Name = feed.Name;
+        }
+    }
+
     private static HashSet<string> FeedKeys(IEnumerable<string> feedRemoteIds) => feedRemoteIds
         .Where(x => !string.IsNullOrWhiteSpace(x))
         .Select(x => x.Trim())

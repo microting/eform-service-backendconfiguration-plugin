@@ -777,15 +777,7 @@ public class SearchListJob : IJob
 
         // Keys and names follow the feed, so a changed RegistrationNo never leaves a stale
         // local value behind. Blank feed values never overwrite local ones.
-        if (!string.IsNullOrEmpty(chemical.RegistrationNo))
-        {
-            c.RegistrationNo = chemical.RegistrationNo;
-        }
-
-        if (!string.IsNullOrEmpty(chemical.Name))
-        {
-            c.Name = chemical.Name;
-        }
+        ChemicalFeedGuard.CopyIdentity(c, chemical);
 
         c.Use = chemical.Use;
         c.Verified = chemical.Verified;

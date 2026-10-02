@@ -201,11 +201,61 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var harness = new Harness();
 
             await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await harness.Run(DistinctFeed(1000), upsert: chemical => chemical.RemoteId == "remote-500"
+                await harness.Run(DistinctFeed(1000), localActiveCount: 1000, upsert: chemical => chemical.RemoteId == "remote-500"
                     ? throw new InvalidOperationException("boom")
                     : ValueTask.CompletedTask));
 
             Assert.That(harness.RemoveCalls, Is.Empty);
+        }
+
+        // ---- RunAsync: unkeyed local rows are not counted ------------------
+
+        private static List<string> KeyedAndUnkeyedLocals(int unkeyed, int keyed) =>
+            Enumerable.Range(1, keyed).Select(n => $"remote-{n}")
+                .Concat(Enumerable.Range(0, unkeyed).Select(n => n % 2 == 0 ? null : "  "))
+                .ToList();
+
+        [TestCase(600, 400)]
+        [TestCase(900, 100)]
+        public async Task UnkeyedLocalRows_DoNotCountTowardsTheRatios(int unkeyed, int keyed)
+        {
+            var harness = new Harness();
+
+            var outcome = await harness.Run(
+                DistinctFeed(keyed), localRemoteIds: KeyedAndUnkeyedLocals(unkeyed, keyed));
+
+            Assert.That(outcome.Decision.Skip, Is.EqualTo(ChemicalSyncSkip.None));
+            Assert.That(outcome.LocalActiveCount, Is.EqualTo(keyed));
+            Assert.That(harness.RemoveCalls, Has.Count.EqualTo(1));
+        }
+
+        // ---- CopyIdentity ---------------------------------------------------
+
+        [TestCase(null)]
+        [TestCase("")]
+        [TestCase("   ")]
+        [TestCase("\t\n")]
+        public void CopyIdentity_BlankFeedValues_KeepTheLocalValues(string blank)
+        {
+            var local = Local(1, "remote-1");
+            var feed = new Chemical { RemoteId = "remote-1", RegistrationNo = blank, Name = blank };
+
+            ChemicalFeedGuard.CopyIdentity(local, feed);
+
+            Assert.That(local.RegistrationNo, Is.EqualTo("reg-1"));
+            Assert.That(local.Name, Is.EqualTo("Chemical 1"));
+        }
+
+        [Test]
+        public void CopyIdentity_RealFeedValues_Overwrite()
+        {
+            var local = Local(1, "remote-1");
+            var feed = new Chemical { RemoteId = "remote-1", RegistrationNo = "new-reg", Name = "New name" };
+
+            ChemicalFeedGuard.CopyIdentity(local, feed);
+
+            Assert.That(local.RegistrationNo, Is.EqualTo("new-reg"));
+            Assert.That(local.Name, Is.EqualTo("New name"));
         }
 
         // ---- RunAsync: normal feed ----------------------------------------
