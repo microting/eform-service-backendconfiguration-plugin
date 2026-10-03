@@ -88,7 +88,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         public void StoredCaseAlreadyCompleted_KeepsItsCase()
         {
             // Worker A completed first; Worker B's later completion must not take the
-            // occurrence over — the earliest completion wins.
+            // occurrence over — the completion processed first keeps it.
             var compliance = new Compliance { MicrotingSdkCaseId = WorkerACaseId, PlanningCaseSiteId = 0 };
 
             ComplianceCompletion.PointAtCompletedCase(compliance, CompletedByWorkerB(), storedCaseCompleted: true);

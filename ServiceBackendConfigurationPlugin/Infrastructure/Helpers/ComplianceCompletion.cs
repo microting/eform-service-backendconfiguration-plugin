@@ -40,8 +40,9 @@ public static class ComplianceCompletion
     /// <summary>
     /// Points <paramref name="compliance"/> at <paramref name="completedSite"/>'s case
     /// unless its stored case is completed itself (<paramref name="storedCaseCompleted"/>):
-    /// then the first completion keeps the occurrence, the same "earliest completion wins"
-    /// rule the backend-configuration readers apply.
+    /// then the completion PROCESSED first keeps the occurrence. That is processing order,
+    /// not completion time — with near-simultaneous completions it can differ from the
+    /// earliest-completion rule the backend-configuration readers apply.
     /// </summary>
     public static void PointAtCompletedCase(
         Compliance compliance, PlanningCaseSite completedSite, bool storedCaseCompleted)
