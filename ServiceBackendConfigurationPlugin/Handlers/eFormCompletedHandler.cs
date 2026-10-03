@@ -276,6 +276,8 @@ public class EFormCompletedHandler(
                             var dbCompliance =
                                 await backendConfigurationPnDbContext.Compliances.FirstAsync(
                                     x => x.Id == compliance.Id);
+                            ComplianceCompletion.PointAtCompletedCase(dbCompliance, planningCaseSite,
+                                await IsCaseCompleted(sdkDbContext, dbCompliance.MicrotingSdkCaseId));
                             await dbCompliance.Delete(backendConfigurationPnDbContext);
                             Console.WriteLine($"info: Deleted compliance {compliance.Id}");
                         }
@@ -283,6 +285,8 @@ public class EFormCompletedHandler(
                 }
                 else
                 {
+                    ComplianceCompletion.PointAtCompletedCase(oneCompliance, planningCaseSite,
+                        await IsCaseCompleted(sdkDbContext, oneCompliance.MicrotingSdkCaseId));
                     await oneCompliance.Delete(backendConfigurationPnDbContext);
                     Console.WriteLine($"info: Deleted compliance {oneCompliance.Id}");
                 }
@@ -311,4 +315,9 @@ public class EFormCompletedHandler(
             }
         }
     }
+
+    /// <summary>#588 — whether the case a compliance stores is completed itself.</summary>
+    private static Task<bool> IsCaseCompleted(
+        Microting.eForm.Infrastructure.MicrotingDbContext sdkDbContext, int caseId)
+        => sdkDbContext.Cases.AnyAsync(c => c.Id == caseId && c.Status == 100);
 }
