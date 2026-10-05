@@ -24,6 +24,7 @@ SOFTWARE.
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
 using FirebaseAdmin;
@@ -41,7 +42,7 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// <summary>
 /// Daily tail-bite (halebid) job: pushes follow-up reminders to the
 /// responsible worker and the property's managers, then soft-deletes orphan
-/// photos. Mirrors <see cref="AdhocReminderJob"/>; the halebid app has its OWN
+/// photos and stale upload placeholders. Mirrors <see cref="AdhocReminderJob"/>; the halebid app has its OWN
 /// Firebase project, so it uses its own credential, a NAMED FirebaseApp and
 /// device registrations with AppId == <see cref="HalebidAppId"/>.
 ///
@@ -95,6 +96,16 @@ public class TailBiteDailyJob : IJob
         catch (Exception e)
         {
             Console.WriteLine($"fail: TailBiteDailyJob photo cleanup - {e.Message}");
+            SentrySdk.CaptureException(e);
+        }
+
+        try
+        {
+            await CleanupStalePlaceholders(db);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"fail: TailBiteDailyJob placeholder cleanup - {e.Message}");
             SentrySdk.CaptureException(e);
         }
     }
@@ -181,9 +192,44 @@ public class TailBiteDailyJob : IJob
             return;
         }
 
-        var action = await db.TailBiteAssessmentActions.FirstAsync(x => x.Id == reminder.ActionId);
-        action.LastReminderAt = DateTime.UtcNow;
-        await action.Update(db);
+        await MarkRemindedLocked(db, reminder);
+    }
+
+    /// <summary>
+    /// Writes LastReminderAt under the plugin's per-property lock (the same
+    /// <c>TailBiteProperties</c> row lock the plugin takes), so a concurrent done / withdraw /
+    /// remove in the plugin and this write are serialised. The action is re-queried inside the
+    /// lock and left untouched if it is no longer remindable.
+    /// </summary>
+    private static Task MarkRemindedLocked(BackendConfigurationPnDbContext db, TailBiteReminder reminder)
+    {
+        var strategy = db.Database.CreateExecutionStrategy();
+        return strategy.ExecuteAsync(async () =>
+        {
+            // Detach anything a failed earlier attempt left pending.
+            db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+            try
+            {
+                await db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT `Id` FROM `TailBiteProperties` WHERE `PropertyId` = {reminder.PropertyId} FOR UPDATE");
+                var action = await db.TailBiteAssessmentActions.FirstOrDefaultAsync(x => x.Id == reminder.ActionId);
+                if (action != null && TailBiteReminderSelector.IsStillRemindable(action))
+                {
+                    action.LastReminderAt = DateTime.UtcNow;
+                    await action.Update(db);
+                }
+
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                db.ChangeTracker.Clear();
+                try { await tx.RollbackAsync(); }
+                catch { /* the original exception is the one that matters */ }
+                throw;
+            }
+        });
     }
 
     /// <summary>
@@ -294,6 +340,20 @@ public class TailBiteDailyJob : IJob
                 continue;
             }
 
+            await photo.Delete(db);
+        }
+    }
+
+    /// <summary>
+    /// Soft-deletes photo reservations (SdkUploadedDataId == 0) whose upload never completed.
+    /// </summary>
+    private static async Task CleanupStalePlaceholders(BackendConfigurationPnDbContext db)
+    {
+        var stale = await TailBiteReminderSelector
+            .StalePlaceholders(db.TailBiteRegistrationPhotos, DateTime.UtcNow)
+            .ToListAsync();
+        foreach (var photo in stale)
+        {
             await photo.Delete(db);
         }
     }

@@ -43,6 +43,18 @@ public static class TailBiteReminderSelector
 {
     public static readonly TimeSpan OrphanAge = TimeSpan.FromDays(30);
 
+    public static readonly TimeSpan PlaceholderAge = TimeSpan.FromDays(1);
+
+    /// <summary>
+    /// Re-checked under the property lock right before LastReminderAt is written: the action
+    /// must still be open (not done, not withdrawn, not removed).
+    /// </summary>
+    public static bool IsStillRemindable(TailBiteAssessmentAction action)
+    {
+        return action.DoneAt == null && action.WithdrawnAt == null
+                                     && action.WorkflowState != Constants.WorkflowStates.Removed;
+    }
+
     /// <summary>
     /// Due = FollowUpDate before tomorrow (UTC date), action not done, not
     /// withdrawn, not removed, outbreak open and not removed, not reminded
@@ -79,7 +91,8 @@ public static class TailBiteReminderSelector
     }
 
     /// <summary>
-    /// Orphan = not removed, older than <see cref="OrphanAge"/> and owned by no
+    /// Orphan = not removed, upload completed (placeholders are handled by
+    /// <see cref="StalePlaceholders"/>), older than <see cref="OrphanAge"/> and owned by no
     /// registration. Ownership needs uuid AND property AND uploading site to
     /// match (the plugin's TailBitePhotoOwnership rule).
     /// </summary>
@@ -87,9 +100,21 @@ public static class TailBiteReminderSelector
         IQueryable<TailBiteRegistrationPhoto> photos, IQueryable<TailBiteRegistration> registrations, DateTime nowUtc)
     {
         var cutoff = nowUtc - OrphanAge;
-        return photos.Where(p => p.CreatedAt < cutoff && p.WorkflowState != Constants.WorkflowStates.Removed
+        return photos.Where(p => p.SdkUploadedDataId != 0 && p.CreatedAt < cutoff && p.WorkflowState != Constants.WorkflowStates.Removed
                                  && !registrations.Any(r => r.ClientUuid == p.RegistrationClientUuid
                                                             && r.PropertyId == p.PropertyId
                                                             && r.SiteId == p.UploadedBySiteId));
+    }
+
+    /// <summary>
+    /// Stale placeholder = a reservation row (SdkUploadedDataId == 0) that never received its
+    /// bytes, older than <see cref="PlaceholderAge"/> and not removed.
+    /// </summary>
+    public static IQueryable<TailBiteRegistrationPhoto> StalePlaceholders(
+        IQueryable<TailBiteRegistrationPhoto> photos, DateTime nowUtc)
+    {
+        var cutoff = nowUtc - PlaceholderAge;
+        return photos.Where(p => p.SdkUploadedDataId == 0 && p.CreatedAt < cutoff
+                                                          && p.WorkflowState != Constants.WorkflowStates.Removed);
     }
 }

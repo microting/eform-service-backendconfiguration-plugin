@@ -185,7 +185,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var linkedUuid = Guid.NewGuid();
             TailBiteRegistrationPhoto Photo(int id, Guid uuid, int ageDays, int siteId = 7, string state = Created) => new()
             {
-                Id = id, RegistrationClientUuid = uuid, PropertyId = 1, UploadedBySiteId = siteId,
+                Id = id, RegistrationClientUuid = uuid, PropertyId = 1, UploadedBySiteId = siteId, SdkUploadedDataId = 100 + id,
                 CreatedAt = Today.AddDays(-ageDays), WorkflowState = state
             };
             var photos = new List<TailBiteRegistrationPhoto>
@@ -194,7 +194,9 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 Photo(2, linkedUuid, 31),                                        // old, owned by registration 9
                 Photo(3, Guid.NewGuid(), 5),                                     // recent orphan
                 Photo(4, Guid.NewGuid(), 40, state: Constants.WorkflowStates.Removed),
-                Photo(5, linkedUuid, 31, siteId: 8)                              // old, uuid of site 7's registration but uploaded by site 8
+                Photo(5, linkedUuid, 31, siteId: 8),                             // old, uuid of site 7's registration but uploaded by site 8
+                new() { Id = 6, RegistrationClientUuid = Guid.NewGuid(), PropertyId = 1, UploadedBySiteId = 7,
+                        SdkUploadedDataId = 0, CreatedAt = Today.AddDays(-40), WorkflowState = Created } // old placeholder: not an orphan
             };
             var registrations = new List<TailBiteRegistration>
             {
@@ -204,6 +206,37 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var orphans = TailBiteReminderSelector.OrphanPhotos(photos.AsQueryable(), registrations.AsQueryable(), Today).Select(p => p.Id).ToList();
 
             Assert.That(orphans, Is.EquivalentTo(new[] { 1, 5 }));
+        }
+
+        [Test]
+        public void StalePlaceholders_OnlyZeroDataIdOlderThanADay_NotRemoved()
+        {
+            TailBiteRegistrationPhoto Photo(int id, int dataId, double ageHours, string state = Created) => new()
+            {
+                Id = id, RegistrationClientUuid = Guid.NewGuid(), PropertyId = 1, UploadedBySiteId = 7,
+                SdkUploadedDataId = dataId, CreatedAt = Today.AddHours(-ageHours), WorkflowState = state
+            };
+            var photos = new List<TailBiteRegistrationPhoto>
+            {
+                Photo(1, 0, 25),                                          // stale placeholder
+                Photo(2, 0, 2),                                           // fresh placeholder (upload may be in flight)
+                Photo(3, 55, 100),                                        // completed upload
+                Photo(4, 0, 100, Constants.WorkflowStates.Removed)        // already removed
+            };
+
+            var stale = TailBiteReminderSelector.StalePlaceholders(photos.AsQueryable(), Today).Select(p => p.Id).ToList();
+
+            Assert.That(stale, Is.EqualTo(new[] { 1 }));
+        }
+
+        [Test]
+        public void IsStillRemindable_OpenAction_IsTrue_DoneWithdrawnOrRemoved_IsFalse()
+        {
+            Assert.That(TailBiteReminderSelector.IsStillRemindable(Action(1, 100, Today)), Is.True);
+            Assert.That(TailBiteReminderSelector.IsStillRemindable(Action(1, 100, Today, done: Today)), Is.False);
+            Assert.That(TailBiteReminderSelector.IsStillRemindable(Action(1, 100, Today, withdrawn: Today)), Is.False);
+            Assert.That(TailBiteReminderSelector.IsStillRemindable(
+                Action(1, 100, Today, state: Constants.WorkflowStates.Removed)), Is.False);
         }
 
         [Test]
