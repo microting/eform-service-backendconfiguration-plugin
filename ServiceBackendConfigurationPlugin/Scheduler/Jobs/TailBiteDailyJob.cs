@@ -172,12 +172,12 @@ public class TailBiteDailyJob : IJob
         // action stays due, so it is tried again tomorrow.
         var outcome = await SendAndProcessBatchAsync(db, messaging, reminder, BuildFcmMessages(reminder, devices), devices);
 
-        if (outcome.CredentialFault || (outcome.TransientFailures > 0 && outcome.Delivered == 0))
+        if (outcome.SystemicFault || (outcome.TransientFailures > 0 && outcome.Delivered == 0))
         {
             // Marker left unset: the next daily run retries.
             Console.WriteLine(
                 $"warn: TailBiteDailyJob - action {reminder.ActionId} not marked reminded " +
-                $"(credential fault: {outcome.CredentialFault}, transient failures: {outcome.TransientFailures})");
+                $"(systemic fault: {outcome.SystemicFault}, transient failures: {outcome.TransientFailures})");
             return;
         }
 
@@ -186,7 +186,22 @@ public class TailBiteDailyJob : IJob
         await action.Update(db);
     }
 
-    private readonly record struct SendOutcome(int Delivered, int TransientFailures, bool CredentialFault);
+    /// <summary>
+    /// True when EVERY response in a batch failed with the SAME code and that code is one a
+    /// server-side fault can produce (SenderIdMismatch: wrong credential; InvalidArgument:
+    /// malformed payload). Such a batch says nothing about the devices, so nothing is pruned.
+    /// Mirrors the "systemic" guard in the plugin's PushNotificationService. Unregistered is
+    /// deliberately not systemic: it only ever means that registration is gone.
+    /// Public so the tests run the shipped rule.
+    /// </summary>
+    public static bool IsSystemicBatch(IReadOnlyList<MessagingErrorCode?> outcomes)
+    {
+        return outcomes.Count > 0
+               && outcomes[0] is MessagingErrorCode.SenderIdMismatch or MessagingErrorCode.InvalidArgument
+               && outcomes.All(x => x == outcomes[0]);
+    }
+
+    private readonly record struct SendOutcome(int Delivered, int TransientFailures, bool SystemicFault);
 
     private static List<Message> BuildFcmMessages(TailBiteReminder reminder, List<DeviceToken> devices)
     {
@@ -215,7 +230,7 @@ public class TailBiteDailyJob : IJob
     {
         var delivered = 0;
         var transientFailures = 0;
-        var credentialFault = false;
+        var systemicFault = false;
 
         for (var offset = 0; offset < messages.Count; offset += FcmBatchLimit)
         {
@@ -226,14 +241,14 @@ public class TailBiteDailyJob : IJob
                 .Select(x => x.IsSuccess ? null : x.Exception?.MessagingErrorCode)
                 .ToList();
 
-            if (AdhocReminderJob.IsCredentialFaultBatch(outcomes))
+            if (IsSystemicBatch(outcomes))
             {
-                // Wrong credential, not dead registrations: prune nothing.
+                // Wrong credential or malformed payload, not dead registrations: prune nothing.
                 var fault = $"TailBiteDailyJob - all {outcomes.Count} message(s) for action " +
-                            $"{reminder.ActionId} failed with SenderIdMismatch; check {ServiceAccountJsonKey}.";
+                            $"{reminder.ActionId} failed with {outcomes[0]}; check {ServiceAccountJsonKey} and the payload.";
                 Console.WriteLine($"fail: {fault}");
                 SentrySdk.CaptureMessage(fault, SentryLevel.Error);
-                credentialFault = true;
+                systemicFault = true;
                 continue;
             }
 
@@ -256,7 +271,7 @@ public class TailBiteDailyJob : IJob
             }
         }
 
-        return new SendOutcome(delivered, transientFailures, credentialFault);
+        return new SendOutcome(delivered, transientFailures, systemicFault);
     }
 
     private static async Task CleanupOrphanPhotos(BackendConfigurationPnDbContext db)
@@ -266,6 +281,19 @@ public class TailBiteDailyJob : IJob
             .ToListAsync();
         foreach (var photo in orphans)
         {
+            // Re-check with a fresh query right before deleting: a registration may have been
+            // synced for this photo since the list above was read. This narrows, not closes,
+            // the window (a registration can still land between this check and the delete);
+            // that is acceptable because only photos older than 30 days are considered.
+            var ownedNow = await db.TailBiteRegistrations.AnyAsync(r =>
+                r.ClientUuid == photo.RegistrationClientUuid
+                && r.PropertyId == photo.PropertyId
+                && r.SiteId == photo.UploadedBySiteId);
+            if (ownedNow)
+            {
+                continue;
+            }
+
             await photo.Delete(db);
         }
     }

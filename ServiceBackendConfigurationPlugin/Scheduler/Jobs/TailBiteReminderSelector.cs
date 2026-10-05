@@ -46,8 +46,8 @@ public static class TailBiteReminderSelector
     /// <summary>
     /// Due = FollowUpDate before tomorrow (UTC date), action not done, not
     /// withdrawn, not removed, outbreak open and not removed, not reminded
-    /// today. Recipients = the responsible site plus all non-removed managers
-    /// of the property, distinct. PropertyWorker.WorkerId is an SDK site id.
+    /// today. Recipients = the responsible site (only while a non-removed worker of the property) plus all
+    /// non-removed managers of the property, distinct. PropertyWorker.WorkerId is an SDK site id.
     /// </summary>
     public static List<TailBiteReminder> Select(
         IQueryable<TailBiteAssessmentAction> actions, IQueryable<TailBiteRiskAssessment> assessments,
@@ -58,19 +58,24 @@ public static class TailBiteReminderSelector
         var due = (from a in actions
                    join ra in assessments on a.AssessmentId equals ra.Id
                    join o in outbreaks on ra.OutbreakId equals o.Id
-                   where a.FollowUpDate < tomorrow && a.DoneAt == null && a.WithdrawnAt == null
+                   where ra.WorkflowState != Constants.WorkflowStates.Removed
+                         && a.FollowUpDate < tomorrow && a.DoneAt == null && a.WithdrawnAt == null
                          && a.WorkflowState != Constants.WorkflowStates.Removed
                          && o.ClosedAt == null && o.WorkflowState != Constants.WorkflowStates.Removed
                          && (a.LastReminderAt == null || a.LastReminderAt < today)
                    select new { a.Id, OutbreakId = o.Id, o.PropertyId, a.Description, a.ResponsibleSiteId }).ToList();
         var propertyIds = due.Select(d => d.PropertyId).Distinct().ToList();
-        var managers = propertyWorkers
-            .Where(pw => propertyIds.Contains(pw.PropertyId) && pw.TailBiteManager
-                         && pw.WorkflowState != Constants.WorkflowStates.Removed)
-            .Select(pw => new { pw.PropertyId, pw.WorkerId }).ToList();
-        return due.Select(d => new TailBiteReminder(d.Id, d.OutbreakId, d.PropertyId, d.Description,
-            managers.Where(m => m.PropertyId == d.PropertyId).Select(m => m.WorkerId)
-                .Append(d.ResponsibleSiteId).Distinct().ToList())).ToList();
+        var workers = propertyWorkers
+            .Where(pw => propertyIds.Contains(pw.PropertyId) && pw.WorkflowState != Constants.WorkflowStates.Removed)
+            .Select(pw => new { pw.PropertyId, pw.WorkerId, pw.TailBiteManager }).ToList();
+        return due.Select(d =>
+        {
+            var onProperty = workers.Where(w => w.PropertyId == d.PropertyId).ToList();
+            // The responsible site only counts while it is still a worker on the property.
+            var recipients = onProperty.Where(w => w.TailBiteManager || w.WorkerId == d.ResponsibleSiteId)
+                .Select(w => w.WorkerId).Distinct().ToList();
+            return new TailBiteReminder(d.Id, d.OutbreakId, d.PropertyId, d.Description, recipients);
+        }).ToList();
     }
 
     /// <summary>

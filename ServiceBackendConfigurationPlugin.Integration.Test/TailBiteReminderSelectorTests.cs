@@ -27,6 +27,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using FirebaseAdmin.Messaging;
     using Microting.eForm.Infrastructure.Constants;
     using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
     using NUnit.Framework;
@@ -103,6 +104,79 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 outbreaks.AsQueryable(), workers.AsQueryable(), Today);
 
             Assert.That(reminders.Single().RecipientSiteIds, Is.EqualTo(new[] { 8 }));
+        }
+
+        [Test]
+        public void Select_SkipsActionsOfRemovedAssessments()
+        {
+            var outbreaks = new List<TailBiteOutbreak> { new() { Id = 1, PropertyId = 1, LocationId = 10, WorkflowState = Created } };
+            var assessments = new List<TailBiteRiskAssessment>
+            {
+                new() { Id = 100, OutbreakId = 1, WorkflowState = Constants.WorkflowStates.Removed }
+            };
+            var actions = new List<TailBiteAssessmentAction> { Action(1, 100, Today) };
+            var workers = new List<PropertyWorker> { new() { PropertyId = 1, WorkerId = 8, WorkflowState = Created } };
+
+            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
+                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+
+            Assert.That(reminders, Is.Empty);
+        }
+
+        [Test]
+        public void Select_RemovedResponsibleWorker_GetsNoReminder_ManagersStillDo()
+        {
+            var outbreaks = new List<TailBiteOutbreak> { new() { Id = 1, PropertyId = 1, LocationId = 10, WorkflowState = Created } };
+            var assessments = new List<TailBiteRiskAssessment> { new() { Id = 100, OutbreakId = 1, WorkflowState = Created } };
+            var actions = new List<TailBiteAssessmentAction> { Action(1, 100, Today) };
+            var workers = new List<PropertyWorker>
+            {
+                new() { PropertyId = 1, WorkerId = 7, TailBiteManager = true, WorkflowState = Created },
+                new() { PropertyId = 1, WorkerId = 8, TailBiteManager = false, WorkflowState = Constants.WorkflowStates.Removed }
+            };
+
+            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
+                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+
+            Assert.That(reminders.Single().RecipientSiteIds, Is.EqualTo(new[] { 7 }));
+        }
+
+        [Test]
+        public void Select_OnlyRecipientIsRemovedResponsible_YieldsNoRecipients()
+        {
+            var outbreaks = new List<TailBiteOutbreak> { new() { Id = 1, PropertyId = 1, LocationId = 10, WorkflowState = Created } };
+            var assessments = new List<TailBiteRiskAssessment> { new() { Id = 100, OutbreakId = 1, WorkflowState = Created } };
+            var actions = new List<TailBiteAssessmentAction> { Action(1, 100, Today) };
+            var workers = new List<PropertyWorker>
+            {
+                new() { PropertyId = 1, WorkerId = 8, WorkflowState = Constants.WorkflowStates.Removed }
+            };
+
+            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
+                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+
+            Assert.That(reminders.Single().RecipientSiteIds, Is.Empty);
+        }
+
+        [Test]
+        public void IsSystemicBatch_SameSystemicCodeEverywhere_IsSystemic()
+        {
+            Assert.That(TailBiteDailyJob.IsSystemicBatch(new List<MessagingErrorCode?>
+                { MessagingErrorCode.InvalidArgument, MessagingErrorCode.InvalidArgument }), Is.True);
+            Assert.That(TailBiteDailyJob.IsSystemicBatch(new List<MessagingErrorCode?>
+                { MessagingErrorCode.SenderIdMismatch }), Is.True);
+        }
+
+        [Test]
+        public void IsSystemicBatch_MixedSuccessUnregisteredOrEmpty_IsNotSystemic()
+        {
+            Assert.That(TailBiteDailyJob.IsSystemicBatch(new List<MessagingErrorCode?>
+                { MessagingErrorCode.InvalidArgument, null }), Is.False);
+            Assert.That(TailBiteDailyJob.IsSystemicBatch(new List<MessagingErrorCode?>
+                { MessagingErrorCode.InvalidArgument, MessagingErrorCode.SenderIdMismatch }), Is.False);
+            Assert.That(TailBiteDailyJob.IsSystemicBatch(new List<MessagingErrorCode?>
+                { MessagingErrorCode.Unregistered, MessagingErrorCode.Unregistered }), Is.False);
+            Assert.That(TailBiteDailyJob.IsSystemicBatch(new List<MessagingErrorCode?>()), Is.False);
         }
 
         [Test]
