@@ -296,6 +296,7 @@ public class Core : ISdkEventHandler
                 );
                 _container.Register(Component.For<SearchListJob>());
                 _container.Register(Component.For<AdhocReminderJob>());
+                _container.Register(Component.For<TailBiteDailyJob>());
                 _container.Register(Component.For<DriveChannelRenewalJob>());
                 _container.Register(Component.For<DriveTokenKeepaliveJob>());
                 _container.Register(Component.For<DriveReconcileJob>());
@@ -522,6 +523,16 @@ public class Core : ISdkEventHandler
             catch (Exception e)
             {
                 Console.WriteLine($"fail: DriveReconcileJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            try
+            {
+                await _container.Resolve<TailBiteDailyJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: TailBiteDailyJob - {e.Message}");
                 SentrySdk.CaptureException(e);
             }
 
