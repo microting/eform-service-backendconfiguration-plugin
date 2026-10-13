@@ -384,6 +384,26 @@ public class ChemicalAlertJobTests : ChemicalJobTestBase
     }
 
     [Test]
+    public async Task TokenThatDeliveredOneAlertAndRejectedAnother_IsNotPruned()
+    {
+        var (property, first) = await ArrangeAsync();
+        var location = await CreateLocationAsync(property.Id, "Lade");
+        var secondChemical = await AddChemicalAsync("Basta", possession: SixMonthsAway);
+        var second = await CreatePlacementAsync(location.Id, secondChemical);
+        await EnablePushAsync();
+        _sender.Outcome = m => m.Data["placementId"] == second.Id.ToString()
+            ? ChemicalPushOutcome.InvalidArgument
+            : ChemicalPushOutcome.Delivered;
+
+        await CreateJob().RunAsync();
+
+        Assert.That(SentTokens(), Is.EqualTo(new[] { "admin-phone", "admin-phone" }), "arrange: two individual pushes");
+        Assert.That(await LiveTokensAsync(), Is.EqualTo(new[] { "admin-phone" }),
+            "a working token is never pruned for one alert-specific payload fault");
+        Assert.That((await LogsAsync()).Select(l => l.PlacementId), Is.EquivalentTo(new[] { first.Id, second.Id }));
+    }
+
+    [Test]
     public async Task DeadToken_IsSoftDeleted_AndTheAlertIsLogged()
     {
         await ArrangeAsync();
