@@ -93,8 +93,7 @@ public class ChemicalAlertJobTests : ChemicalJobTestBase
     }
 
     [TestCase(4, 59)]
-    [TestCase(6, 0)]
-    public async Task OutsideTheRunHour_DoesNothing(int hour, int minute)
+    public async Task BeforeTheRunHour_DoesNothing(int hour, int minute)
     {
         await ArrangeAsync();
         await EnablePushAsync();
@@ -104,6 +103,48 @@ public class ChemicalAlertJobTests : ChemicalJobTestBase
 
         Assert.That(_sender.Sent, Is.Empty);
         Assert.That(await LogsAsync(), Is.Empty);
+    }
+
+    [Test]
+    public async Task LateTick_StillRunsOncePerDay_AndTheNextDayRunsAgain()
+    {
+        // A slow earlier job pushed every tick of the 05:00 hour out of the window.
+        var (_, placement) = await ArrangeAsync();
+        await EnablePushAsync();
+        var job = CreateJob();
+
+        _time.Now = new DateTimeOffset(2026, 10, 1, 6, 1, 0, TimeSpan.Zero);
+        await job.RunAsync();
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(1));
+
+        // A second chemical becomes due, but today's run already happened.
+        var second = await AddChemicalAsync("Basta", possession: SixMonthsAway);
+        await CreatePlacementAsync(placement.LocationId, second, 5);
+        _time.Now = new DateTimeOffset(2026, 10, 1, 7, 1, 0, TimeSpan.Zero);
+        await job.RunAsync();
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(1));
+
+        _time.Now = new DateTimeOffset(2026, 10, 2, 5, 10, 0, TimeSpan.Zero);
+        await job.RunAsync();
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task DigestEmailLogs_DoNotSuppressThePush()
+    {
+        var (_, placement) = await ArrangeAsync();
+        await EnablePushAsync();
+        await new ChemicalAlertLog
+        {
+            PlacementId = placement.Id, Threshold = ChemicalAlertThresholdEnum.SixMonths,
+            DeadlineKind = ChemicalDeadlineKindEnum.UseAndPossession, Channel = ChemicalAlertChannelEnum.Email,
+            SentAt = RunTime.UtcDateTime.AddDays(-1), CreatedByUserId = 0, UpdatedByUserId = 0,
+        }.Create(Db);
+
+        await CreateJob().RunAsync();
+
+        Assert.That(SentTokens(), Is.EqualTo(new[] { "admin-phone" }));
+        Assert.That((await LogsAsync()).Count(x => x.Channel == ChemicalAlertChannelEnum.Push), Is.EqualTo(1));
     }
 
     [Test]

@@ -269,7 +269,7 @@ public class ChemicalDigestJob(
         SentrySdk.CaptureMessage(message, scope => scope.SetFingerprint(["chemical-digest-undelivered"]), SentryLevel.Warning);
     }
 
-    private static async Task MarkEvaluatedAsync(BackendConfigurationPnDbContext db, string slotText)
+    public static async Task MarkEvaluatedAsync(BackendConfigurationPnDbContext db, string slotText)
     {
         var marker = await db.PluginConfigurationValues.FirstOrDefaultAsync(x => x.Name == EvaluatedSlotKey);
         if (marker == null)

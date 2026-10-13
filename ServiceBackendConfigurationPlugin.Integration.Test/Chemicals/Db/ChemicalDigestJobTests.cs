@@ -546,4 +546,30 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
         Assert.That(_email.Attempted, Is.Empty);
         Assert.That(await EmailLogsAsync(), Is.Empty);
     }
+
+    [Test]
+    public async Task EvaluatedMarker_TwoWritesLeaveExactlyOneWellFormedRow()
+    {
+        await using (var db1 = FreshDb())
+        await using (var db2 = FreshDb())
+        {
+            await Task.WhenAll(
+                ChemicalDigestJob.MarkEvaluatedAsync(db1, "2026-10-19T05:00:00.0000000Z"),
+                ChemicalDigestJob.MarkEvaluatedAsync(db2, "2026-10-19T05:00:00.0000000Z"));
+        }
+
+        await using (var db = FreshDb())
+        {
+            await ChemicalDigestJob.MarkEvaluatedAsync(db, "2026-10-26T06:00:00.0000000Z");
+        }
+
+        await using var check = FreshDb();
+        var rows = await check.PluginConfigurationValues.AsNoTracking()
+            .Where(x => x.Name == ChemicalDigestJob.EvaluatedSlotKey).ToListAsync();
+        Assert.That(rows, Has.Count.EqualTo(1));
+        Assert.That(rows[0].Value, Is.EqualTo("2026-10-26T06:00:00.0000000Z"));
+        Assert.That(rows[0].WorkflowState, Is.EqualTo(Constants.WorkflowStates.Created));
+        Assert.That(rows[0].CreatedAt.Year, Is.GreaterThan(2000));
+        Assert.That(rows[0].Version, Is.GreaterThanOrEqualTo(1));
+    }
 }
