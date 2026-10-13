@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microting.eForm.Infrastructure.Constants;
-using Microting.eFormApi.BasePn.Infrastructure.Database.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Enum;
@@ -25,8 +23,8 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// listed (Plan D decision 9).
 ///
 /// Once per week per tenant: the first SUCCESSFUL evaluation for the week's slot
-/// closes the week, even when nothing needed action or nobody is listed (marker
-/// below). The digest is the picture at the week's first evaluation (Monday 07:00,
+/// closes the week, even when nothing needed action or nobody is listed (in-memory
+/// marker below). The digest is the picture at the week's first evaluation (Monday 07:00,
 /// or the first tick after it when the pod was down): an item that becomes due
 /// later in the week waits for next Monday, and each tick after the first
 /// evaluation is cheap. A missing customerNo or SendGrid key does NOT close the week. For the most recent slot only (a pod that was down
@@ -38,11 +36,15 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// slot, so a restart, a crash mid-run or a failure after the sends cannot resend.
 /// If no e-mail at all was accepted the claim rows are removed and the next hourly
 /// tick retries (decision 11). A failed recipient after a partial success is not
-/// retried. When there is nothing to send, a PluginConfigurationValues row
-/// (<see cref="EvaluatedSlotKey"/>, the slot as ISO 8601 UTC) is the marker that closes
-/// the week; no schema change. Across pods a duplicate is possible only in the seconds between the
-/// guard check and the claim write: GET_LOCK is node-local on Galera, and a unique
-/// constraint would need a base migration, so that window is accepted.
+/// retried. When there is nothing to send (or no recipients), the slot is remembered
+/// in an instance field of this singleton job, so later ticks that week skip. That
+/// marker is in memory per pod: after a pod restart mid-week one re-evaluation can
+/// send a digest if something has become due meanwhile (accepted; a shared row would
+/// need a unique key this plugin's tables do not have). Across pods a duplicate is
+/// possible only in the seconds between the guard check and the claim write:
+/// GET_LOCK is node-local on Galera, and a unique constraint would need a base
+/// migration, so that window is accepted. The claim is all or nothing: a failure
+/// while writing it releases the rows already written.
 /// </summary>
 public class ChemicalDigestJob(
     BackendConfigurationDbContextHelper dbContextHelper,
@@ -51,8 +53,11 @@ public class ChemicalDigestJob(
     IChemicalEmailSender emailSender,
     TimeProvider time) : IJob
 {
-    /// <summary>Marker: the slot (ISO 8601 UTC) whose evaluation found nothing to send.</summary>
-    public const string EvaluatedSlotKey = "BackendConfigurationSettings:ChemistryDigestEvaluatedSlot";
+    // The slot whose evaluation found nothing to send (or nobody to send to). In memory
+    // on purpose: the job is a Windsor singleton, and a marker row would need a table
+    // with a unique key (PluginConfigurationValues has none, and the plugin loads it with
+    // ToDictionary by Name). A pod restart forgets it (accepted, see the class doc).
+    private DateTime? _evaluatedSlot;
 
     // Overlapping hourly ticks (a slow SearchListJob can outlast the period) must
     // not run the job twice in one pod.
@@ -90,16 +95,15 @@ public class ChemicalDigestJob(
             return;
         }
 
-        await using var db = dbContextHelper.GetDbContext();
-        if (await db.ChemicalAlertLogs.AnyAsync(x => x.Channel == ChemicalAlertChannelEnum.Email
-                                              && x.WorkflowState != Constants.WorkflowStates.Removed
-                                              && x.SentAt >= slot))
+        if (_evaluatedSlot == slot)
         {
             return;
         }
 
-        var slotText = slot.ToString("O", CultureInfo.InvariantCulture);
-        if (await db.PluginConfigurationValues.AsNoTracking().AnyAsync(x => x.Name == EvaluatedSlotKey && x.Value == slotText))
+        await using var db = dbContextHelper.GetDbContext();
+        if (await db.ChemicalAlertLogs.AnyAsync(x => x.Channel == ChemicalAlertChannelEnum.Email
+                                              && x.WorkflowState != Constants.WorkflowStates.Removed
+                                              && x.SentAt >= slot))
         {
             return;
         }
@@ -115,7 +119,7 @@ public class ChemicalDigestJob(
             .ToListAsync();
         if (settings.Count == 0)
         {
-            await MarkEvaluatedAsync(db, slotText);
+            _evaluatedSlot = slot;
             return;
         }
 
@@ -145,7 +149,7 @@ public class ChemicalDigestJob(
             properties, register, today, ChemicalDigestSchedule.PreviousSlotStartUtc(slot), slot);
         if (digests.Count == 0)
         {
-            await MarkEvaluatedAsync(db, slotText);
+            _evaluatedSlot = slot;
             return;
         }
 
@@ -268,29 +272,5 @@ public class ChemicalDigestJob(
     {
         Console.WriteLine($"fail: {message}");
         SentrySdk.CaptureMessage(message, scope => scope.SetFingerprint(["chemical-digest-undelivered"]), SentryLevel.Warning);
-    }
-
-    /// <summary>
-    /// Writes the marker as one conditional INSERT, then an UPDATE by Name. A plain
-    /// Add + SaveChanges could insert a second row when two pods race, and
-    /// PluginConfigurationValues.Name has no unique constraint; the plugin loads that
-    /// table with ToDictionary(c => c.Name), so a duplicate would stop it loading on
-    /// every start (same house pattern as SecurityGroupBackfillService).
-    /// </summary>
-    public static async Task MarkEvaluatedAsync(BackendConfigurationPnDbContext db, string slotText)
-    {
-        var now = DateTime.UtcNow;
-        await db.Database.ExecuteSqlRawAsync(
-            @"INSERT INTO `PluginConfigurationValues`
-                  (`Name`, `Value`, `CreatedAt`, `UpdatedAt`, `Version`,
-                   `WorkflowState`, `CreatedByUserId`, `UpdatedByUserId`)
-              SELECT {0}, {1}, {2}, {2}, 1, {3}, 0, 0 FROM DUAL
-              WHERE NOT EXISTS (
-                  SELECT 1 FROM `PluginConfigurationValues` `existing`
-                  WHERE `existing`.`Name` = {0})",
-            EvaluatedSlotKey, slotText, now, Constants.WorkflowStates.Created);
-        await db.PluginConfigurationValues
-            .Where(x => x.Name == EvaluatedSlotKey)
-            .ExecuteUpdateAsync(set => set.SetProperty(x => x.Value, slotText).SetProperty(x => x.UpdatedAt, now));
     }
 }
