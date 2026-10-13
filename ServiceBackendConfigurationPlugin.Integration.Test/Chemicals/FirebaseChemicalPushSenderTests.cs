@@ -8,7 +8,7 @@ using ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
 public class FirebaseChemicalPushSenderTests
 {
     [TestCase(MessagingErrorCode.Unregistered, ChemicalPushOutcome.DeadToken)]
-    [TestCase(MessagingErrorCode.InvalidArgument, ChemicalPushOutcome.DeadToken)]
+    [TestCase(MessagingErrorCode.InvalidArgument, ChemicalPushOutcome.InvalidArgument)]
     [TestCase(MessagingErrorCode.SenderIdMismatch, ChemicalPushOutcome.SenderIdMismatch)]
     [TestCase(MessagingErrorCode.Unavailable, ChemicalPushOutcome.Transient)]
     [TestCase(MessagingErrorCode.Internal, ChemicalPushOutcome.Transient)]
