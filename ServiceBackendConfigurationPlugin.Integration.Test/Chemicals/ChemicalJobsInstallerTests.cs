@@ -21,9 +21,11 @@ public class ChemicalJobsInstallerTests
             Component.For<ChemicalDbContextHelper>().Instance(new ChemicalDbContextHelper("Server=unused")));
 
         container.Install(new ChemicalJobsInstaller(
-            () => throw new InvalidOperationException("the SDK database must not be opened while resolving")));
+            () => throw new InvalidOperationException("the SDK database must not be opened while resolving"),
+            () => throw new InvalidOperationException("the SendGrid key must not be read while resolving")));
 
         Assert.That(container.Resolve<ChemicalAlertJob>(), Is.Not.Null);
+        Assert.That(container.Resolve<ChemicalDigestJob>(), Is.Not.Null);
         Assert.That(container.Resolve<TimeProvider>(), Is.SameAs(TimeProvider.System));
     }
 }

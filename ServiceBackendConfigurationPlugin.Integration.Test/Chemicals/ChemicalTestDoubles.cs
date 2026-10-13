@@ -51,3 +51,23 @@ public sealed class FakeChemicalSdkDirectory : IChemicalSdkDirectory
             : Task.FromResult(CustomerNo);
     }
 }
+
+public sealed class FakeChemicalEmailSender : IChemicalEmailSender
+{
+    public bool Configured { get; set; } = true;
+
+    /// <summary>Every attempted e-mail, including those that failed.</summary>
+    public List<ChemicalDigestEmail> Attempted { get; } = [];
+
+    public Func<ChemicalDigestEmail, bool> Fails { get; set; } = _ => false;
+
+    public bool IsConfigured() => Configured;
+
+    public Task SendAsync(ChemicalDigestEmail email)
+    {
+        Attempted.Add(email);
+        return Fails(email)
+            ? Task.FromException(new InvalidOperationException($"SendGrid answered 500 for {email.To}"))
+            : Task.CompletedTask;
+    }
+}
