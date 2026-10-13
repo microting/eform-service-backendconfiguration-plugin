@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microting.eForm.Infrastructure.Constants;
+using Microting.eFormApi.BasePn.Infrastructure.Database.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Enum;
@@ -22,7 +24,11 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// only when something needs action. Not flag-gated: recipients opt in by being
 /// listed (Plan D decision 9).
 ///
-/// Once per week per tenant, for the most recent slot only (a pod that was down
+/// Once per week per tenant: the first SUCCESSFUL evaluation for the week's slot
+/// closes the week, even when nothing needed action or nobody is listed (marker
+/// below). So the digest is "Monday's picture"; an item that becomes due on
+/// Wednesday waits for next Monday, and each tick after the first evaluation is
+/// cheap. A missing customerNo or SendGrid key does NOT close the week. For the most recent slot only (a pod that was down
 /// on Monday sends late in the same week; older slots are never sent). New
 /// registrations are the window [previous slot, that slot).
 ///
@@ -31,7 +37,9 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// slot, so a restart, a crash mid-run or a failure after the sends cannot resend.
 /// If no e-mail at all was accepted the claim rows are removed and the next hourly
 /// tick retries (decision 11). A failed recipient after a partial success is not
-/// retried. Across pods a duplicate is possible only in the seconds between the
+/// retried. When there is nothing to send, a PluginConfigurationValues row
+/// (<see cref="EvaluatedSlotKey"/>, the slot as ISO 8601 UTC) is the marker that closes
+/// the week; no schema change. Across pods a duplicate is possible only in the seconds between the
 /// guard check and the claim write: GET_LOCK is node-local on Galera, and a unique
 /// constraint would need a base migration, so that window is accepted.
 /// </summary>
@@ -42,6 +50,9 @@ public class ChemicalDigestJob(
     IChemicalEmailSender emailSender,
     TimeProvider time) : IJob
 {
+    /// <summary>Marker: the slot (ISO 8601 UTC) whose evaluation found nothing to send.</summary>
+    public const string EvaluatedSlotKey = "BackendConfigurationSettings:ChemistryDigestEvaluatedSlot";
+
     // Overlapping hourly ticks (a slow SearchListJob can outlast the period) must
     // not run the job twice in one pod.
     private static readonly SemaphoreSlim RunGate = new(1, 1);
@@ -86,6 +97,12 @@ public class ChemicalDigestJob(
             return;
         }
 
+        var slotText = slot.ToString("O", CultureInfo.InvariantCulture);
+        if (await db.PluginConfigurationValues.AsNoTracking().AnyAsync(x => x.Name == EvaluatedSlotKey && x.Value == slotText))
+        {
+            return;
+        }
+
         var settings = await (
                 from s in db.ChemicalPropertySettings
                 join p in db.Properties on s.PropertyId equals p.Id
@@ -97,6 +114,7 @@ public class ChemicalDigestJob(
             .ToListAsync();
         if (settings.Count == 0)
         {
+            await MarkEvaluatedAsync(db, slotText);
             return;
         }
 
@@ -126,6 +144,7 @@ public class ChemicalDigestJob(
             properties, register, today, ChemicalDigestSchedule.PreviousSlotStartUtc(slot), slot);
         if (digests.Count == 0)
         {
+            await MarkEvaluatedAsync(db, slotText);
             return;
         }
 
@@ -149,6 +168,7 @@ public class ChemicalDigestJob(
         var claims = await ClaimAsync(db, digests, utcNow);
         var delivered = 0;
         var failed = 0;
+        var authRejected = false;
         foreach (var digest in digests)
         {
             try
@@ -159,12 +179,13 @@ public class ChemicalDigestJob(
             catch (ChemicalEmailAuthException e)
             {
                 failed = digests.Count - delivered;
+                authRejected = true;
                 const string rejected = "ChemicalDigestJob - SendGrid rejected the key (401/403); stopping this run.";
                 Console.WriteLine($"fail: {rejected} {e.Message}");
                 SentrySdk.CaptureMessage(rejected, scope => scope.SetFingerprint(["chemical-digest-sendgrid-auth"]), SentryLevel.Error);
                 break;
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (Exception e)
             {
                 // The address is deliberately not logged (personal data in logs).
                 failed++;
@@ -176,14 +197,18 @@ public class ChemicalDigestJob(
         {
             await ReleaseAsync(db, claims);
             Console.WriteLine("warn: ChemicalDigestJob - no digest was accepted; retrying on the next tick");
+            if (!authRejected)
+            {
+                // At most one event per tick; the auth case already raised its own.
+                CaptureUndelivered($"ChemicalDigestJob - none of {digests.Count} digest e-mail(s) was accepted; retrying on the next tick.");
+            }
+
             return;
         }
 
         if (failed > 0)
         {
-            var undelivered = $"ChemicalDigestJob - {failed} of {digests.Count} digest e-mail(s) were not accepted and will not be retried this week.";
-            Console.WriteLine($"fail: {undelivered}");
-            SentrySdk.CaptureMessage(undelivered, scope => scope.SetFingerprint(["chemical-digest-undelivered"]), SentryLevel.Warning);
+            CaptureUndelivered($"ChemicalDigestJob - {failed} of {digests.Count} digest e-mail(s) were not accepted and will not be retried this week.");
         }
 
         Console.WriteLine($"info: ChemicalDigestJob - sent {delivered} of {digests.Count} digest e-mail(s)");
@@ -212,7 +237,18 @@ public class ChemicalDigestJob(
                 CreatedByUserId = 0,
                 UpdatedByUserId = 0,
             };
-            await claim.Create(db);
+            try
+            {
+                await claim.Create(db);
+            }
+            catch
+            {
+                // All or nothing: a partial claim would suppress the week with nothing sent.
+                db.ChangeTracker.Clear();
+                await ReleaseAsync(db, claims);
+                throw;
+            }
+
             claims.Add(claim);
         }
 
@@ -225,5 +261,26 @@ public class ChemicalDigestJob(
         {
             await claim.Delete(db);
         }
+    }
+
+    private static void CaptureUndelivered(string message)
+    {
+        Console.WriteLine($"fail: {message}");
+        SentrySdk.CaptureMessage(message, scope => scope.SetFingerprint(["chemical-digest-undelivered"]), SentryLevel.Warning);
+    }
+
+    private static async Task MarkEvaluatedAsync(BackendConfigurationPnDbContext db, string slotText)
+    {
+        var marker = await db.PluginConfigurationValues.FirstOrDefaultAsync(x => x.Name == EvaluatedSlotKey);
+        if (marker == null)
+        {
+            db.PluginConfigurationValues.Add(new PluginConfigurationValue { Name = EvaluatedSlotKey, Value = slotText });
+        }
+        else
+        {
+            marker.Value = slotText;
+        }
+
+        await db.SaveChangesAsync();
     }
 }
