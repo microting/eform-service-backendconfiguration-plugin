@@ -300,6 +300,7 @@ public class Core : ISdkEventHandler
                 _container.Register(Component.For<DriveChannelRenewalJob>());
                 _container.Register(Component.For<DriveTokenKeepaliveJob>());
                 _container.Register(Component.For<DriveReconcileJob>());
+                _container.Install(new ChemicalJobsInstaller(() => _sdkCore.DbContextHelper.GetDbContext()));
 
                 _bus = _container.Resolve<IBus>();
 
@@ -493,6 +494,18 @@ public class Core : ISdkEventHandler
             catch (Exception e)
             {
                 Console.WriteLine($"fail: AdhocReminderJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            // flutter-chemistry deadline push: acts only in the 05:00 UTC tick
+            // and only when the tenant's flag is on (both checked inside).
+            try
+            {
+                await _container.Resolve<ChemicalAlertJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: ChemicalAlertJob - {e.Message}");
                 SentrySdk.CaptureException(e);
             }
         }

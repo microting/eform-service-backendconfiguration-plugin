@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -30,6 +31,8 @@ public static class ChemicalPushMessages
         int propertyId, string propertyName, IReadOnlyList<ChemicalDueAlert> alerts, string languageCode,
         string customerNo)
     {
+        // The app drops a tap whose customerNo differs from its session; a push without one would route in any session.
+        ArgumentException.ThrowIfNullOrEmpty(customerNo);
         var texts = ChemicalAlertTexts.For(languageCode);
         if (alerts.Count > MaxIndividualAlertsPerProperty)
         {
