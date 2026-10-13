@@ -28,8 +28,7 @@ public static class ChemicalDigestSchedule
 
         // 07:00 is never inside a DST gap or overlap (EU switches at 02:00/03:00),
         // so the local-to-UTC conversion is unambiguous.
-        var slotLocal = DateTime.SpecifyKind(local.Date + SendAt.ToTimeSpan(), DateTimeKind.Unspecified);
-        return TimeZoneInfo.ConvertTimeToUtc(slotLocal, ChemicalAlertRules.Copenhagen);
+        return SlotUtc(local.Date);
     }
 
     /// <summary>
@@ -46,7 +45,11 @@ public static class ChemicalDigestSchedule
         }
 
         var local = TimeZoneInfo.ConvertTimeFromUtc(slotUtc, ChemicalAlertRules.Copenhagen);
-        var previousLocal = DateTime.SpecifyKind(local.Date.AddDays(-7) + SendAt.ToTimeSpan(), DateTimeKind.Unspecified);
-        return TimeZoneInfo.ConvertTimeToUtc(previousLocal, ChemicalAlertRules.Copenhagen);
+        return SlotUtc(local.Date.AddDays(-7));
     }
+
+    /// <summary>SendAt on the given Copenhagen calendar date, as UTC.</summary>
+    private static DateTime SlotUtc(DateTime localDate) =>
+        TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(localDate + SendAt.ToTimeSpan(), DateTimeKind.Unspecified), ChemicalAlertRules.Copenhagen);
 }

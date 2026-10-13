@@ -29,7 +29,7 @@ public sealed record ChemicalDigestSection(
     /// <summary>Items that need action; these are what the digest logs (Channel Email).</summary>
     public IEnumerable<ChemicalDigestItem> ActionItems => Passed.Concat(Upcoming).Concat(StatusChanges);
 
-    public bool HasAction => Passed.Count + Upcoming.Count + StatusChanges.Count > 0;
+    public bool HasAction => ActionItems.Any();
 
     public bool IsEmpty => !HasAction && NewRegistrations.Count == 0;
 }
