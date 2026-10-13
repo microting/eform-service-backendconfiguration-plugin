@@ -239,6 +239,9 @@ public class ChemicalAlertJob(
         /// <summary>DeviceToken ids that answered SenderIdMismatch or InvalidArgument.</summary>
         public HashSet<int> SuspectTokenIds { get; } = [];
 
+        /// <summary>DeviceToken ids that received at least one push: never pruned as suspects.</summary>
+        public HashSet<int> DeliveredTokenIds { get; } = [];
+
         public List<int> SuspectProperties { get; } = [];
     }
 
@@ -270,6 +273,7 @@ public class ChemicalAlertJob(
                 {
                     case ChemicalPushOutcome.Delivered:
                         delivered++;
+                        run.DeliveredTokenIds.Add(sends[i].Token.Id);
                         break;
                     case ChemicalPushOutcome.Transient:
                         transientFailures++;
@@ -305,9 +309,15 @@ public class ChemicalAlertJob(
                     run.SuspectProperties.Add(propertyId);
                 }
 
-                Console.WriteLine($"warn: ChemicalAlertJob - nothing delivered for property {propertyId} " +
+                var undelivered = $"ChemicalAlertJob - nothing delivered for property {propertyId} " +
                                   $"({transientFailures} transient, {suspects} credential/payload failure(s)); " +
-                                  "nothing logged, retrying on the next run");
+                                  "nothing logged, retrying on the next run";
+                Console.WriteLine($"warn: {undelivered}");
+                SentrySdk.CaptureMessage(undelivered, scope =>
+                {
+                    scope.SetFingerprint(["chemical-alert-undelivered"]);
+                    scope.SetExtra("propertyId", propertyId);
+                }, SentryLevel.Warning);
                 return;
             }
 
@@ -350,7 +360,8 @@ public class ChemicalAlertJob(
             return;
         }
 
-        var ids = run.SuspectTokenIds.ToList();
+        // A token that delivered any push works; one alert-specific payload fault must not prune it.
+        var ids = run.SuspectTokenIds.Except(run.DeliveredTokenIds).ToList();
         var rows = await db.DeviceTokens.Where(x => ids.Contains(x.Id)).ToListAsync();
         foreach (var token in rows)
         {
