@@ -271,11 +271,43 @@ public class ChemicalDigestJob(
         return claims;
     }
 
+    /// <summary>
+    /// Removes the claim rows after a run in which nothing was accepted, in one transaction
+    /// (same pattern as <see cref="ClaimAsync"/>). If even that fails the week stays suppressed,
+    /// so it is reported once under its own fingerprint.
+    /// </summary>
     private static async Task ReleaseAsync(BackendConfigurationPnDbContext db, List<ChemicalAlertLog> claims)
     {
-        foreach (var claim in claims)
+        var ids = claims.Select(c => c.Id).ToList();
+        try
         {
-            await claim.Delete(db);
+            var strategy = db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                db.ChangeTracker.Clear();
+                await using var transaction = await db.Database.BeginTransactionAsync();
+                try
+                {
+                    var rows = await db.ChemicalAlertLogs.Where(x => ids.Contains(x.Id)).ToListAsync();
+                    foreach (var row in rows)
+                    {
+                        await row.Delete(db);
+                    }
+
+                    await transaction.CommitAsync();
+                }
+                catch
+                {
+                    db.ChangeTracker.Clear();
+                    throw;
+                }
+            });
+        }
+        catch (Exception e)
+        {
+            var stuck = $"ChemicalDigestJob - the claim rows could not be released ({e.Message}); this week's digest stays suppressed until they are removed.";
+            Console.WriteLine($"fail: {stuck}");
+            SentrySdk.CaptureMessage(stuck, scope => scope.SetFingerprint(["chemical-digest-release-failed"]), SentryLevel.Error);
         }
     }
 
