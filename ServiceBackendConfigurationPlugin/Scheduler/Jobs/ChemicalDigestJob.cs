@@ -26,9 +26,10 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 ///
 /// Once per week per tenant: the first SUCCESSFUL evaluation for the week's slot
 /// closes the week, even when nothing needed action or nobody is listed (marker
-/// below). So the digest is "Monday's picture"; an item that becomes due on
-/// Wednesday waits for next Monday, and each tick after the first evaluation is
-/// cheap. A missing customerNo or SendGrid key does NOT close the week. For the most recent slot only (a pod that was down
+/// below). The digest is the picture at the week's first evaluation (Monday 07:00,
+/// or the first tick after it when the pod was down): an item that becomes due
+/// later in the week waits for next Monday, and each tick after the first
+/// evaluation is cheap. A missing customerNo or SendGrid key does NOT close the week. For the most recent slot only (a pod that was down
 /// on Monday sends late in the same week; older slots are never sent). New
 /// registrations are the window [previous slot, that slot).
 ///
@@ -269,18 +270,27 @@ public class ChemicalDigestJob(
         SentrySdk.CaptureMessage(message, scope => scope.SetFingerprint(["chemical-digest-undelivered"]), SentryLevel.Warning);
     }
 
+    /// <summary>
+    /// Writes the marker as one conditional INSERT, then an UPDATE by Name. A plain
+    /// Add + SaveChanges could insert a second row when two pods race, and
+    /// PluginConfigurationValues.Name has no unique constraint; the plugin loads that
+    /// table with ToDictionary(c => c.Name), so a duplicate would stop it loading on
+    /// every start (same house pattern as SecurityGroupBackfillService).
+    /// </summary>
     public static async Task MarkEvaluatedAsync(BackendConfigurationPnDbContext db, string slotText)
     {
-        var marker = await db.PluginConfigurationValues.FirstOrDefaultAsync(x => x.Name == EvaluatedSlotKey);
-        if (marker == null)
-        {
-            db.PluginConfigurationValues.Add(new PluginConfigurationValue { Name = EvaluatedSlotKey, Value = slotText });
-        }
-        else
-        {
-            marker.Value = slotText;
-        }
-
-        await db.SaveChangesAsync();
+        var now = DateTime.UtcNow;
+        await db.Database.ExecuteSqlRawAsync(
+            @"INSERT INTO `PluginConfigurationValues`
+                  (`Name`, `Value`, `CreatedAt`, `UpdatedAt`, `Version`,
+                   `WorkflowState`, `CreatedByUserId`, `UpdatedByUserId`)
+              SELECT {0}, {1}, {2}, {2}, 1, {3}, 0, 0 FROM DUAL
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM `PluginConfigurationValues` `existing`
+                  WHERE `existing`.`Name` = {0})",
+            EvaluatedSlotKey, slotText, now, Constants.WorkflowStates.Created);
+        await db.PluginConfigurationValues
+            .Where(x => x.Name == EvaluatedSlotKey)
+            .ExecuteUpdateAsync(set => set.SetProperty(x => x.Value, slotText).SetProperty(x => x.UpdatedAt, now));
     }
 }

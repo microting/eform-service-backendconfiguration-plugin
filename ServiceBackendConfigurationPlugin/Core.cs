@@ -503,7 +503,7 @@ public class Core : ISdkEventHandler
                 SentrySdk.CaptureException(e);
             }
 
-            // flutter-chemistry deadline push: acts only in the 05:00 UTC tick
+            // flutter-chemistry deadline push: acts at the first tick from 05:00 UTC each day
             // and only when the tenant's flag is on (both checked inside).
             try
             {

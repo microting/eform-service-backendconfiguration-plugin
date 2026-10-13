@@ -17,7 +17,7 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 
 /// <summary>
 /// flutter-chemistry deadline and status push (spec §9), once a day in the
-/// 05:00 UTC hourly tick, after the 02:00 UTC register sync.
+/// first hourly tick from 05:00 UTC each day, after the 02:00 UTC register sync.
 ///
 /// Opt-in per tenant, like AdhocReminderJob: nothing happens unless
 /// <see cref="FeatureFlagKey"/> is "true" (absent = off; ops switch it on
@@ -92,15 +92,32 @@ public class ChemicalAlertJob(
     public async Task RunAsync()
     {
         var utcNow = time.GetUtcNow().UtcDateTime;
-        if (utcNow.Hour != RunHourUtc)
+        var today = DateOnly.FromDateTime(utcNow);
+        // Not "hour == 5": a slow earlier job in the tick could push every tick of that
+        // hour out of the window and skip a day. Run at the first tick from 05:00 UTC
+        // on, once per UTC day per process; the Push log dedupe makes a re-run after a
+        // restart safe.
+        if (utcNow.Hour < RunHourUtc || _lastCompletedRun == today)
         {
             return;
         }
 
+        if (await RunCoreAsync(utcNow))
+        {
+            _lastCompletedRun = today;
+        }
+    }
+
+    // Set only after a run that reached the planner; a missing flag/credential/customerNo retries next tick.
+    private DateOnly? _lastCompletedRun;
+
+    /// <returns>True when the run completed (even with nothing due); false when it must be retried on a later tick.</returns>
+    private async Task<bool> RunCoreAsync(DateTime utcNow)
+    {
         await using var db = dbContextHelper.GetDbContext();
         if (!bool.TryParse(await ReadValueAsync(db, FeatureFlagKey), out var enabled) || !enabled)
         {
-            return;
+            return false;
         }
 
         var serviceAccountJson = await ReadValueAsync(db, ServiceAccountJsonKey);
@@ -112,7 +129,11 @@ public class ChemicalAlertJob(
                 _missingCredentialsLogged = true;
             }
 
-            return;
+            // The flag is ON but nothing can be pushed: tell an operator, once per run.
+            SentrySdk.CaptureMessage(
+                $"ChemicalAlertJob - the push flag is on but {ServiceAccountJsonKey} is not set; no chemistry push can be sent.",
+                scope => scope.SetFingerprint(["chemical-alert-no-credential"]), SentryLevel.Error);
+            return false;
         }
 
         _missingCredentialsLogged = false;
@@ -129,7 +150,7 @@ public class ChemicalAlertJob(
             .ToListAsync();
         if (open.Count == 0)
         {
-            return;
+            return true;
         }
 
         var movedFrom = await db.ChemicalPlacements.AsNoTracking()
@@ -152,13 +173,13 @@ public class ChemicalAlertJob(
         await StoreObservedStatusAsync(db, plan.ObservedStatusUpdates);
         if (plan.DueAlerts.Count == 0)
         {
-            return;
+            return true;
         }
 
         var customerNo = await ChemicalCustomerNo.TryReadAsync(sdkDirectory, nameof(ChemicalAlertJob), "chemical-alert-customerno-empty");
         if (string.IsNullOrEmpty(customerNo))
         {
-            return;
+            return false;
         }
 
         var run = new RunTally();
@@ -181,6 +202,7 @@ public class ChemicalAlertJob(
         }
 
         await PruneSuspectTokensAsync(db, run);
+        return true;
     }
 
     /// <summary>SDK site ids with Admin or Remove on the property that are still active workers there.</summary>
