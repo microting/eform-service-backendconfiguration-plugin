@@ -26,7 +26,6 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 {
     using System;
     using System.Linq;
-    using System.Security.Cryptography;
     using System.Threading;
     using FirebaseAdmin;
     using FirebaseAdmin.Messaging;
@@ -95,7 +94,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             Assert.That(FirebaseApp.DefaultInstance, Is.Null,
                 "precondition: no default app exists at the start of this test");
 
-            var messaging = AdhocReminderJob.EnsureAdhocMessaging(ServiceAccountJson(AdhocProjectId));
+            var messaging = AdhocReminderJob.EnsureAdhocMessaging(TestServiceAccounts.Json(AdhocProjectId));
 
             Assert.That(messaging, Is.Not.Null);
             var app = FirebaseApp.GetInstance(AdhocReminderJob.FirebaseAppName);
@@ -118,13 +117,13 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             FirebaseApp.Create(new AppOptions
             {
                 Credential = CredentialFactory
-                    .FromJson<ServiceAccountCredential>(ServiceAccountJson(ForeignProjectId))
+                    .FromJson<ServiceAccountCredential>(TestServiceAccounts.Json(ForeignProjectId))
                     .ToGoogleCredential()
             });
             Assert.That(FirebaseApp.DefaultInstance, Is.Not.Null,
                 "arrange: the foreign sender must actually own the default app");
 
-            var messaging = AdhocReminderJob.EnsureAdhocMessaging(ServiceAccountJson(AdhocProjectId));
+            var messaging = AdhocReminderJob.EnsureAdhocMessaging(TestServiceAccounts.Json(AdhocProjectId));
 
             // Before the named-app fix the job saw a default app, returned
             // early without ever applying its own credential, and then sent
@@ -142,7 +141,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         [Test]
         public void RepeatedTicks_ReuseTheSameApp_AndDoNotThrow()
         {
-            var json = ServiceAccountJson(AdhocProjectId);
+            var json = TestServiceAccounts.Json(AdhocProjectId);
 
             var first = AdhocReminderJob.EnsureAdhocMessaging(json);
             // Create throws on a duplicate name, so every tick after the
@@ -156,7 +155,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
         [Test]
         public void ConcurrentFirstTicks_CreateExactlyOneApp()
         {
-            var json = ServiceAccountJson(AdhocProjectId);
+            var json = TestServiceAccounts.Json(AdhocProjectId);
             const int racers = 8;
 
             // Dedicated threads, not the thread pool: the pool injects threads
@@ -186,30 +185,6 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 "a loser of the race must not see FirebaseApp.Create reject a duplicate name");
             Assert.That(results, Has.All.SameAs(results[0]),
                 "every racer must observe the one app the winner created");
-        }
-
-        /// <summary>
-        /// A syntactically real service-account key. The private key is
-        /// generated here rather than checked in, so nothing in this repo
-        /// resembles a leaked credential; FirebaseAdmin parses it eagerly, so
-        /// a placeholder string would not do.
-        /// </summary>
-        private static string ServiceAccountJson(string projectId)
-        {
-            using var rsa = RSA.Create(2048);
-            var privateKey = rsa.ExportPkcs8PrivateKeyPem().Replace("\n", "\\n");
-
-            return $$"""
-                     {
-                       "type": "service_account",
-                       "project_id": "{{projectId}}",
-                       "private_key_id": "{{Guid.NewGuid():N}}",
-                       "private_key": "{{privateKey}}",
-                       "client_email": "adhoc@{{projectId}}.iam.gserviceaccount.com",
-                       "client_id": "1",
-                       "token_uri": "https://oauth2.googleapis.com/token"
-                     }
-                     """;
         }
     }
 }
