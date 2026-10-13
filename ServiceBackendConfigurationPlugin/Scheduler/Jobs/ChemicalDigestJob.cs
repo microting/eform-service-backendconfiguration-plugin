@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microting.eForm.Infrastructure.Constants;
+using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Enum;
 using Microting.EformBackendConfigurationBase.Infrastructure.Helpers;
@@ -20,11 +22,18 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// only when something needs action. Not flag-gated: recipients opt in by being
 /// listed (Plan D decision 9).
 ///
-/// Once per week per tenant: skipped when a Channel Email ChemicalAlertLog
-/// exists at or after this week's slot, so a restart or a second pod does not
-/// resend. Each action item of every delivered e-mail is logged once. If every
-/// send fails nothing is logged and the next hourly tick in the window retries
-/// (decision 11). New registrations are the window [previous slot, this slot).
+/// Once per week per tenant, for the most recent slot only (a pod that was down
+/// on Monday sends late in the same week; older slots are never sent). New
+/// registrations are the window [previous slot, that slot).
+///
+/// Claim before send: the Channel Email ChemicalAlertLog rows are written BEFORE
+/// the first e-mail and the job skips when any such row exists at or after the
+/// slot, so a restart, a crash mid-run or a failure after the sends cannot resend.
+/// If no e-mail at all was accepted the claim rows are removed and the next hourly
+/// tick retries (decision 11). A failed recipient after a partial success is not
+/// retried. Across pods a duplicate is possible only in the seconds between the
+/// guard check and the claim write: GET_LOCK is node-local on Galera, and a unique
+/// constraint would need a base migration, so that window is accepted.
 /// </summary>
 public class ChemicalDigestJob(
     BackendConfigurationDbContextHelper dbContextHelper,
@@ -33,10 +42,18 @@ public class ChemicalDigestJob(
     IChemicalEmailSender emailSender,
     TimeProvider time) : IJob
 {
-    private static bool _notConfiguredLogged;
+    // Overlapping hourly ticks (a slow SearchListJob can outlast the period) must
+    // not run the job twice in one pod.
+    private static readonly SemaphoreSlim RunGate = new(1, 1);
 
     public async Task Execute()
     {
+        if (!await RunGate.WaitAsync(0))
+        {
+            Console.WriteLine("info: ChemicalDigestJob - previous run still active; skipping this tick");
+            return;
+        }
+
         try
         {
             await RunAsync();
@@ -46,8 +63,13 @@ public class ChemicalDigestJob(
             Console.WriteLine($"fail: ChemicalDigestJob - {e.Message}");
             SentrySdk.CaptureException(e);
         }
+        finally
+        {
+            RunGate.Release();
+        }
     }
 
+    /// <summary>One tick. Public so tests can observe exceptions that Execute reports to Sentry.</summary>
     public async Task RunAsync()
     {
         var utcNow = time.GetUtcNow().UtcDateTime;
@@ -57,23 +79,12 @@ public class ChemicalDigestJob(
         }
 
         await using var db = dbContextHelper.GetDbContext();
-        if (await db.ChemicalAlertLogs.AnyAsync(x => x.Channel == ChemicalAlertChannelEnum.Email && x.SentAt >= slot))
+        if (await db.ChemicalAlertLogs.AnyAsync(x => x.Channel == ChemicalAlertChannelEnum.Email
+                                              && x.WorkflowState != Constants.WorkflowStates.Removed
+                                              && x.SentAt >= slot))
         {
             return;
         }
-
-        if (!emailSender.IsConfigured())
-        {
-            if (!_notConfiguredLogged)
-            {
-                Console.WriteLine($"warn: ChemicalDigestJob - {SendGridChemicalEmailSender.SendGridKeyId} is not set; skipping");
-                _notConfiguredLogged = true;
-            }
-
-            return;
-        }
-
-        _notConfiguredLogged = false;
 
         var settings = await (
                 from s in db.ChemicalPropertySettings
@@ -118,37 +129,79 @@ public class ChemicalDigestJob(
             return;
         }
 
-        var customerNo = await sdkDirectory.CustomerNoAsync();
-        var delivered = new List<ChemicalDigest>();
+        var customerNo = await ChemicalCustomerNo.TryReadAsync(
+            sdkDirectory, nameof(ChemicalDigestJob), "chemical-digest-customerno-empty");
+        if (string.IsNullOrEmpty(customerNo))
+        {
+            return;
+        }
+
+        var key = emailSender.ReadKey();
+        if (string.IsNullOrEmpty(key))
+        {
+            const string missing = "ChemicalDigestJob - " + SendGridChemicalEmailSender.SendGridKeyId +
+                                   " is not set although digest recipients are listed; nothing can be sent.";
+            Console.WriteLine($"fail: {missing}");
+            SentrySdk.CaptureMessage(missing, scope => scope.SetFingerprint(["chemical-digest-no-sendgrid-key"]), SentryLevel.Error);
+            return;
+        }
+
+        var claims = await ClaimAsync(db, digests, utcNow);
+        var delivered = 0;
+        var failed = 0;
         foreach (var digest in digests)
         {
             try
             {
-                await emailSender.SendAsync(ChemicalDigestEmailRenderer.Render(digest, customerNo, today));
-                delivered.Add(digest);
+                await emailSender.SendAsync(key, ChemicalDigestEmailRenderer.Render(digest, customerNo, today));
+                delivered++;
             }
-            catch (Exception e)
+            catch (ChemicalEmailAuthException e)
+            {
+                failed = digests.Count - delivered;
+                const string rejected = "ChemicalDigestJob - SendGrid rejected the key (401/403); stopping this run.";
+                Console.WriteLine($"fail: {rejected} {e.Message}");
+                SentrySdk.CaptureMessage(rejected, scope => scope.SetFingerprint(["chemical-digest-sendgrid-auth"]), SentryLevel.Error);
+                break;
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
             {
                 // The address is deliberately not logged (personal data in logs).
+                failed++;
                 Console.WriteLine($"fail: ChemicalDigestJob - a digest e-mail was not accepted: {e.Message}");
-                SentrySdk.CaptureException(e);
             }
         }
 
-        if (delivered.Count == 0)
+        if (delivered == 0)
         {
-            Console.WriteLine("warn: ChemicalDigestJob - no digest was accepted; retrying on the next tick in the window");
+            await ReleaseAsync(db, claims);
+            Console.WriteLine("warn: ChemicalDigestJob - no digest was accepted; retrying on the next tick");
             return;
         }
 
-        var items = delivered
+        if (failed > 0)
+        {
+            var undelivered = $"ChemicalDigestJob - {failed} of {digests.Count} digest e-mail(s) were not accepted and will not be retried this week.";
+            Console.WriteLine($"fail: {undelivered}");
+            SentrySdk.CaptureMessage(undelivered, scope => scope.SetFingerprint(["chemical-digest-undelivered"]), SentryLevel.Warning);
+        }
+
+        Console.WriteLine($"info: ChemicalDigestJob - sent {delivered} of {digests.Count} digest e-mail(s)");
+    }
+
+    /// <summary>One Email log row per distinct action item of the planned digests, written before any send.</summary>
+    private static async Task<List<ChemicalAlertLog>> ClaimAsync(
+        BackendConfigurationPnDbContext db, IReadOnlyList<ChemicalDigest> digests, DateTime utcNow)
+    {
+        var items = digests
             .SelectMany(d => d.Sections)
             .SelectMany(s => s.ActionItems)
             .DistinctBy(i => (i.PlacementId, i.Threshold, i.DeadlineKind, i.Status))
             .ToList();
+        var claims = new List<ChemicalAlertLog>();
         foreach (var item in items)
         {
-            await new ChemicalAlertLog
+            var claim = new ChemicalAlertLog
             {
                 PlacementId = item.PlacementId,
                 Threshold = item.Threshold!.Value,
@@ -158,9 +211,19 @@ public class ChemicalDigestJob(
                 SentAt = utcNow,
                 CreatedByUserId = 0,
                 UpdatedByUserId = 0,
-            }.Create(db);
+            };
+            await claim.Create(db);
+            claims.Add(claim);
         }
 
-        Console.WriteLine($"info: ChemicalDigestJob - sent {delivered.Count} of {digests.Count} digest e-mail(s)");
+        return claims;
+    }
+
+    private static async Task ReleaseAsync(BackendConfigurationPnDbContext db, List<ChemicalAlertLog> claims)
+    {
+        foreach (var claim in claims)
+        {
+            await claim.Delete(db);
+        }
     }
 }

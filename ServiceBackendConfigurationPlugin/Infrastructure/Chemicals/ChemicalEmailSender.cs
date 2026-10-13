@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Threading.Tasks;
 using SendGrid;
 using SendGrid.Helpers.Mail;
@@ -7,11 +8,15 @@ namespace ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
 
 public interface IChemicalEmailSender
 {
-    bool IsConfigured();
+    /// <summary>The tenant's key, or null/empty when none is set. The job reads it once per run.</summary>
+    string ReadKey();
 
-    /// <summary>Throws when the e-mail was not accepted.</summary>
-    Task SendAsync(ChemicalDigestEmail email);
+    /// <summary>Throws when the e-mail was not accepted; <see cref="ChemicalEmailAuthException"/> when the key is rejected.</summary>
+    Task SendAsync(string key, ChemicalDigestEmail email);
 }
+
+/// <summary>SendGrid answered 401/403: systemic, so retrying other recipients is pointless.</summary>
+public sealed class ChemicalEmailAuthException(string message) : InvalidOperationException(message);
 
 /// <summary>
 /// SendGrid with the tenant's EmailSettings:SendGridKey, the same key and
@@ -24,17 +29,21 @@ public sealed class SendGridChemicalEmailSender(
     public const string FromAddress = "no-reply@microting.com";
     public const string FromName = "Microting Kemi";
 
-    public bool IsConfigured() => !string.IsNullOrEmpty(readKey());
+    public string ReadKey() => readKey();
 
-    public async Task SendAsync(ChemicalDigestEmail email)
+    public async Task SendAsync(string key, ChemicalDigestEmail email)
     {
-        var key = readKey();
         if (string.IsNullOrEmpty(key))
         {
             throw new InvalidOperationException($"{SendGridKeyId} is not set.");
         }
 
         var response = await send(key, BuildMessage(email));
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            throw new ChemicalEmailAuthException($"SendGrid answered {(int)response.StatusCode} for a chemical digest.");
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"SendGrid answered {(int)response.StatusCode} for a chemical digest.");

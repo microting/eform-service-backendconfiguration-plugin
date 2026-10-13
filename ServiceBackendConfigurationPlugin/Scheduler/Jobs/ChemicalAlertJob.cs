@@ -155,7 +155,7 @@ public class ChemicalAlertJob(
             return;
         }
 
-        var customerNo = await TryReadCustomerNoAsync();
+        var customerNo = await ChemicalCustomerNo.TryReadAsync(sdkDirectory, nameof(ChemicalAlertJob), "chemical-alert-customerno-empty");
         if (string.IsNullOrEmpty(customerNo))
         {
             return;
@@ -181,34 +181,6 @@ public class ChemicalAlertJob(
         }
 
         await PruneSuspectTokensAsync(db, run);
-    }
-
-    /// <summary>
-    /// The tenant's customerNo, or null when the SDK setting is missing or empty
-    /// (reported to Sentry; the run then sends nothing and retries tomorrow).
-    /// The directory throws on a missing setting, so that is caught here.
-    /// </summary>
-    private async Task<string> TryReadCustomerNoAsync()
-    {
-        try
-        {
-            var customerNo = await sdkDirectory.CustomerNoAsync();
-            if (!string.IsNullOrEmpty(customerNo))
-            {
-                return customerNo;
-            }
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine($"fail: ChemicalAlertJob - customerNo unavailable: {e.Message}");
-            SentrySdk.CaptureException(e);
-            return null;
-        }
-
-        const string empty = "ChemicalAlertJob - the SDK setting customerNo is empty; sending nothing this run.";
-        Console.WriteLine($"fail: {empty}");
-        SentrySdk.CaptureMessage(empty, scope => scope.SetFingerprint(["chemical-alert-customerno-empty"]), SentryLevel.Error);
-        return null;
     }
 
     /// <summary>SDK site ids with Admin or Remove on the property that are still active workers there.</summary>
