@@ -288,6 +288,113 @@ public class ChemicalAlertJobTests : ChemicalJobTestBase
         Assert.That(ChemicalAlertJob.IsSystemicBatch([]), Is.False);
     }
 
+    private async Task<List<string>> LiveTokensAsync()
+    {
+        await using var db = FreshDb();
+        return await db.DeviceTokens.AsNoTracking()
+            .Where(x => x.WorkflowState == Constants.WorkflowStates.Created).Select(x => x.FcmToken).ToListAsync();
+    }
+
+    /// <summary>A second property with its own due alert, one Admin worker (site 601) and one device.</summary>
+    private async Task<ChemicalPlacement> ArrangeSecondPropertyAsync()
+    {
+        var property = await CreatePropertyAsync("Anden gård");
+        var location = await CreateLocationAsync(property.Id);
+        var chemicalId = await AddChemicalAsync("Basta", possession: SixMonthsAway);
+        var placement = await CreatePlacementAsync(location.Id, chemicalId);
+        await AddWorkerAsync(property.Id, 601, admin: true);
+        await AddTokenAsync(601, "second-phone");
+        return placement;
+    }
+
+    [Test]
+    public async Task PartialTransient_LogsOnce_NoResendNextDay()
+    {
+        await ArrangeAsync();
+        await AddTokenAsync(501, "flaky-tablet");
+        await EnablePushAsync();
+        _sender.Outcome = m => m.Token == "flaky-tablet" ? ChemicalPushOutcome.Transient : ChemicalPushOutcome.Delivered;
+
+        await CreateJob().RunAsync();
+        _time.Now = RunTime.AddDays(1);
+        await CreateJob().RunAsync();
+
+        Assert.That(SentTokens().Count(t => t == "admin-phone"), Is.EqualTo(1), "the delivered device is not re-pushed");
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task CredentialFaultWithOneTransient_PrunesNothing_AndLogsNothing()
+    {
+        await ArrangeAsync();
+        await AddTokenAsync(501, "admin-tablet");
+        await AddTokenAsync(501, "flaky-watch");
+        await EnablePushAsync();
+        _sender.Outcome = m => m.Token == "flaky-watch" ? ChemicalPushOutcome.Transient : ChemicalPushOutcome.SenderIdMismatch;
+
+        await CreateJob().RunAsync();
+
+        Assert.That(await LiveTokensAsync(), Is.EquivalentTo(new[] { "admin-phone", "admin-tablet", "flaky-watch" }));
+        Assert.That(await LogsAsync(), Is.Empty);
+    }
+
+    [Test]
+    public async Task InvalidArgumentOnOneProperty_PrunedWhenAnotherPropertyDelivered()
+    {
+        await ArrangeAsync();
+        await ArrangeSecondPropertyAsync();
+        await EnablePushAsync();
+        _sender.Outcome = m => m.Token == "admin-phone" ? ChemicalPushOutcome.InvalidArgument : ChemicalPushOutcome.Delivered;
+
+        await CreateJob().RunAsync();
+
+        Assert.That(await LiveTokensAsync(), Is.EqualTo(new[] { "second-phone" }), "the run proved the payload good");
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(1), "only the delivered property is logged");
+    }
+
+    [Test]
+    public async Task MixedSenderIdMismatchAndDelivered_PrunesTheMismatchedToken()
+    {
+        await ArrangeAsync();
+        await AddTokenAsync(501, "foreign-phone");
+        await EnablePushAsync();
+        _sender.Outcome = m => m.Token == "foreign-phone" ? ChemicalPushOutcome.SenderIdMismatch : ChemicalPushOutcome.Delivered;
+
+        await CreateJob().RunAsync();
+
+        Assert.That(await LiveTokensAsync(), Is.EqualTo(new[] { "admin-phone" }));
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task OneFailingProperty_DoesNotStopTheOthers()
+    {
+        await ArrangeAsync();
+        var second = await ArrangeSecondPropertyAsync();
+        await EnablePushAsync();
+        _sender.Outcome = m => m.Token == "admin-phone"
+            ? throw new InvalidOperationException("boom")
+            : ChemicalPushOutcome.Delivered;
+
+        Assert.That(async () => await CreateJob().RunAsync(), Throws.Nothing);
+
+        var log = (await LogsAsync()).Single();
+        Assert.That(log.PlacementId, Is.EqualTo(second.Id));
+    }
+
+    [Test]
+    public async Task CustomerNo_IsReadExactlyOncePerRun_EvenWithTwoPropertiesDue()
+    {
+        await ArrangeAsync();
+        await ArrangeSecondPropertyAsync();
+        await EnablePushAsync();
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_sdk.CustomerNoReads, Is.EqualTo(1));
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(2));
+    }
+
     [Test]
     public async Task DeadToken_IsSoftDeleted_AndTheAlertIsLogged()
     {
