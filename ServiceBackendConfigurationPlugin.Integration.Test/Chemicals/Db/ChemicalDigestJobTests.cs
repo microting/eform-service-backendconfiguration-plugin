@@ -325,19 +325,151 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
     }
 
     [Test]
-    public async Task PodStoppedMidRun_TheRestartDoesNotResend()
+    public async Task SecondJobInstanceStartedMidRun_SendsNothing()
+    {
+        // A restarted or second pod ticking while the first is between its claim and its last send.
+        await ArrangeAsync();
+        var secondPod = new FakeChemicalEmailSender();
+        var started = false;
+        _email.BeforeSend = async _ =>
+        {
+            if (!started)
+            {
+                started = true;
+                await new ChemicalDigestJob(DbHelper, ChemicalHelper, _sdk, secondPod, _time).RunAsync();
+            }
+        };
+
+        await CreateJob().RunAsync();
+
+        Assert.That(secondPod.Attempted, Is.Empty);
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task TimeoutOnOneRecipient_DoesNotStopTheOthers_AndKeepsTheClaim()
     {
         await ArrangeAsync();
-        _email.Crashes = e => e.To == "b@example.com";
+        _email.TimesOut = e => e.To == "a@example.com";
 
-        Assert.That(async () => await CreateJob().RunAsync(), Throws.InstanceOf<OperationCanceledException>());
-        Assert.That(_email.Attempted, Has.Count.EqualTo(2), "a was mailed, then the pod stopped at b");
+        await CreateJob().RunAsync();
 
-        var restarted = new FakeChemicalEmailSender();
-        _time.Now = RunTime.AddMinutes(5);
-        await new ChemicalDigestJob(DbHelper, ChemicalHelper, _sdk, restarted, _time).RunAsync();
+        Assert.That(_email.Attempted.Select(e => e.To), Is.EqualTo(new[] { "a@example.com", "b@example.com" }));
+        Assert.That(await EmailLogsAsync(), Has.Count.EqualTo(1));
+    }
 
-        Assert.That(restarted.Attempted, Is.Empty);
+    [Test]
+    public async Task EveryRecipientTimesOut_ReleasesTheClaim_AndTheNextTickSends()
+    {
+        await ArrangeAsync();
+        _email.TimesOut = _ => true;
+
+        await CreateJob().RunAsync();
+        Assert.That(await EmailLogsAsync(), Is.Empty);
+
+        _email.TimesOut = _ => false;
+        _time.Now = RunTime.AddHours(1);
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Has.Count.EqualTo(4));
+        Assert.That(await EmailLogsAsync(), Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task FailureWhileClaiming_LeavesNoPartialClaim_AndSendsNothing()
+    {
+        var (property, _) = await ArrangeAsync();
+        var location = await CreateLocationAsync(property.Id, "Lade");
+        var second = await AddChemicalAsync("Basta", possession: AlreadyPassed);
+        await CreatePlacementAsync(location.Id, second, registeredAt: LongAgo);
+        var table = Db.Model.FindEntityType(typeof(ChemicalAlertLog))!.GetTableName();
+        var email = (int)ChemicalAlertChannelEnum.Email;
+        await Db.Database.ExecuteSqlRawAsync(
+            $"CREATE TRIGGER `chemical_test_fail_second_claim` BEFORE INSERT ON `{table}` FOR EACH ROW " +
+            $"BEGIN IF (SELECT COUNT(*) FROM `{table}` WHERE `Channel` = {email}) >= 1 THEN " +
+            "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test: second claim row fails'; END IF; END");
+        try
+        {
+            Assert.That(async () => await CreateJob().RunAsync(), Throws.Exception);
+        }
+        finally
+        {
+            await Db.Database.ExecuteSqlRawAsync("DROP TRIGGER IF EXISTS `chemical_test_fail_second_claim`");
+        }
+
+        Assert.That(_email.Attempted, Is.Empty);
+        Assert.That(await EmailLogsAsync(), Is.Empty, "the one row written before the failure is released");
+
+        _time.Now = RunTime.AddHours(1);
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2), "the next tick retries");
+    }
+
+    [Test]
+    public async Task MondayWithNothingToSend_ClosesTheWeek_ALaterDueItemWaitsForNextMonday()
+    {
+        var (property, _) = await ArrangeAsync(possession: FarAway);
+
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Is.Empty);
+
+        // Wednesday: an item has become due, but this week's evaluation already happened.
+        var location = await CreateLocationAsync(property.Id, "Lade");
+        var due = await AddChemicalAsync("Basta", possession: AlreadyPassed);
+        await CreatePlacementAsync(location.Id, due, registeredAt: LongAgo);
+        _time.Now = At("2026-10-28T10:00:00Z");
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Is.Empty);
+
+        _time.Now = At("2026-11-02T06:10:00Z"); // next Monday 07:10 CET
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task MondayWithoutRecipients_ClosesTheWeek()
+    {
+        var (property, _) = await ArrangeAsync(recipients: "");
+
+        await CreateJob().RunAsync();
+        await SetDigestRecipientsAsync(property.Id, "a@example.com");
+        _time.Now = At("2026-10-28T10:00:00Z");
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Is.Empty);
+    }
+
+    [Test]
+    public async Task DowntimeOnMonday_TuesdayEvaluatesAndSendsOnce()
+    {
+        await ArrangeAsync();
+        _time.Now = At("2026-10-27T08:00:00Z");
+
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+
+        _time.Now = At("2026-10-27T09:00:00Z");
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task MissingKeyOrCustomerNo_DoesNotCloseTheWeek()
+    {
+        await ArrangeAsync();
+        _email.Key = null;
+        await CreateJob().RunAsync();
+        _email.Key = "SG.test";
+        _sdk.CustomerNo = "";
+        _time.Now = RunTime.AddHours(1);
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Is.Empty);
+
+        _sdk.CustomerNo = "4711";
+        _time.Now = RunTime.AddHours(2);
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
     }
 
     [Test]

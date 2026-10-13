@@ -69,8 +69,8 @@ public sealed class FakeChemicalEmailSender : IChemicalEmailSender
     /// <summary>A 401/403-style systemic failure.</summary>
     public Func<ChemicalDigestEmail, bool> AuthFails { get; set; } = _ => false;
 
-    /// <summary>Simulates the pod being stopped mid-run (cancellation is not swallowed by the job).</summary>
-    public Func<ChemicalDigestEmail, bool> Crashes { get; set; } = _ => false;
+    /// <summary>An HttpClient timeout to SendGrid (TaskCanceledException): an ordinary send failure.</summary>
+    public Func<ChemicalDigestEmail, bool> TimesOut { get; set; } = _ => false;
 
     /// <summary>Runs before each send, e.g. to observe the database at that moment.</summary>
     public Func<ChemicalDigestEmail, Task> BeforeSend { get; set; } = _ => Task.CompletedTask;
@@ -86,9 +86,9 @@ public sealed class FakeChemicalEmailSender : IChemicalEmailSender
         Attempted.Add(email);
         KeysUsed.Add(key);
         await BeforeSend(email);
-        if (Crashes(email))
+        if (TimesOut(email))
         {
-            throw new OperationCanceledException();
+            throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.");
         }
 
         if (AuthFails(email))
