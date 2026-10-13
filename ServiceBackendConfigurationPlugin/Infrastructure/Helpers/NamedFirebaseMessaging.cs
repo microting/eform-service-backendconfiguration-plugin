@@ -7,7 +7,7 @@ namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 /// <summary>
 /// The FirebaseMessaging client of a NAMED FirebaseApp, created on first use.
 /// Every FCM sender in this service owns one named app per Firebase project
-/// (adhoc: "microting-adhoc", chemistry: "microting-chemistry"). The unnamed
+/// (adhoc: "microting-adhoc", halebid: "microting-halebid", chemistry: "microting-chemistry"). The unnamed
 /// default app is a process-wide singleton that co-hosted plugins also claim;
 /// the full reasoning lives on AdhocReminderJob.EnsureAdhocMessaging.
 /// </summary>
@@ -33,7 +33,8 @@ public static class NamedFirebaseMessaging
                     {
                         // Non-obsolete replacement for GoogleCredential.FromJson;
                         // pinning ServiceAccountCredential fails fast on a JSON
-                        // that is not a service-account key.
+                        // that is not a service-account key: the exception reaches
+                        // the calling job's try/catch + Sentry.
                         Credential = CredentialFactory
                             .FromJson<ServiceAccountCredential>(serviceAccountJson)
                             .ToGoogleCredential()

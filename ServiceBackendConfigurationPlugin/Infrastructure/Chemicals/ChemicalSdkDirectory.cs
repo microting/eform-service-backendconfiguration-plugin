@@ -17,7 +17,7 @@ public interface IChemicalSdkDirectory
     Task<string> CustomerNoAsync();
 }
 
-public sealed class SdkChemicalDirectory(Func<MicrotingDbContext> sdkDbContextFactory) : IChemicalSdkDirectory
+public sealed class ChemicalSdkDirectory(Func<MicrotingDbContext> sdkDbContextFactory) : IChemicalSdkDirectory
 {
     public async Task<IReadOnlyDictionary<int, string>> LanguageCodesAsync(IReadOnlyCollection<int> sdkSiteIds)
     {

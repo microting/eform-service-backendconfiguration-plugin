@@ -10,8 +10,14 @@ public enum ChemicalPushOutcome
 {
     Delivered,
 
-    /// <summary>UNREGISTERED / INVALID_ARGUMENT: the token is gone; soft-delete it.</summary>
+    /// <summary>UNREGISTERED: the token is gone; soft-delete it.</summary>
     DeadToken,
+
+    /// <summary>
+    /// INVALID_ARGUMENT: the token OR the payload is bad. Never prune on it alone:
+    /// a systemic payload fault would otherwise delete every token.
+    /// </summary>
+    InvalidArgument,
 
     /// <summary>Token minted by another Firebase project, or (if EVERY send says so) our credential is wrong.</summary>
     SenderIdMismatch,
@@ -56,7 +62,8 @@ public sealed class FirebaseChemicalPushSender : IChemicalPushSender
 
     public static ChemicalPushOutcome Classify(MessagingErrorCode? code) => code switch
     {
-        MessagingErrorCode.Unregistered or MessagingErrorCode.InvalidArgument => ChemicalPushOutcome.DeadToken,
+        MessagingErrorCode.Unregistered => ChemicalPushOutcome.DeadToken,
+        MessagingErrorCode.InvalidArgument => ChemicalPushOutcome.InvalidArgument,
         MessagingErrorCode.SenderIdMismatch => ChemicalPushOutcome.SenderIdMismatch,
         _ => ChemicalPushOutcome.Transient
     };

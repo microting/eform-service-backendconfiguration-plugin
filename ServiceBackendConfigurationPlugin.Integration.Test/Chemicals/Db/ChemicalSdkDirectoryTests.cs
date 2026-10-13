@@ -11,7 +11,7 @@ using ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
 
 [TestFixture]
 [NonParallelizable]
-public class SdkChemicalDirectoryTests
+public class ChemicalSdkDirectoryTests
 {
     private static MicrotingDbContext Sdk() =>
         new MicrotingDbContextFactory().CreateDbContext([ChemicalJobDatabases.ConnectionString(ChemicalJobDatabases.SdkDb)]);
@@ -32,7 +32,7 @@ public class SdkChemicalDirectoryTests
             bo = boSite.Id;
         }
 
-        var codes = await new SdkChemicalDirectory(Sdk).LanguageCodesAsync([anna, bo, 987654]);
+        var codes = await new ChemicalSdkDirectory(Sdk).LanguageCodesAsync([anna, bo, 987654]);
 
         Assert.That(codes, Is.EqualTo(new Dictionary<int, string> { [anna] = "da", [bo] = "en-US" }));
     }
@@ -55,7 +55,7 @@ public class SdkChemicalDirectoryTests
             await sdk.SaveChangesAsync();
         }
 
-        Assert.That(await new SdkChemicalDirectory(Sdk).CustomerNoAsync(), Is.EqualTo("4711"));
+        Assert.That(await new ChemicalSdkDirectory(Sdk).CustomerNoAsync(), Is.EqualTo("4711"));
     }
 
     private static async Task<Language> LanguageAsync(MicrotingDbContext sdk, string code, string name)
