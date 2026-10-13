@@ -409,8 +409,9 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
     public async Task MondayWithNothingToSend_ClosesTheWeek_ALaterDueItemWaitsForNextMonday()
     {
         var (property, _) = await ArrangeAsync(possession: FarAway);
+        var job = CreateJob();
 
-        await CreateJob().RunAsync();
+        await job.RunAsync();
         Assert.That(_email.Attempted, Is.Empty);
 
         // Wednesday: an item has become due, but this week's evaluation already happened.
@@ -418,11 +419,13 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
         var due = await AddChemicalAsync("Basta", possession: AlreadyPassed);
         await CreatePlacementAsync(location.Id, due, registeredAt: LongAgo);
         _time.Now = At("2026-10-28T10:00:00Z");
-        await CreateJob().RunAsync();
+        await job.RunAsync();
         Assert.That(_email.Attempted, Is.Empty);
+        Assert.That(await FreshDb().PluginConfigurationValues.AnyAsync(x => x.Name.Contains("ChemistryDigest")), Is.False,
+            "the in-memory week marker must not write a settings row");
 
         _time.Now = At("2026-11-02T06:10:00Z"); // next Monday 07:10 CET
-        await CreateJob().RunAsync();
+        await job.RunAsync();
         Assert.That(_email.Attempted, Has.Count.EqualTo(2));
     }
 
@@ -430,8 +433,9 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
     public async Task MondayWithoutRecipients_ClosesTheWeek()
     {
         var (property, _) = await ArrangeAsync(recipients: "");
+        var job = CreateJob();
 
-        await CreateJob().RunAsync();
+        await job.RunAsync();
         await using (var db = FreshDb())
         {
             var settings = await db.ChemicalPropertySettings.SingleAsync(x => x.PropertyId == property.Id);
@@ -440,7 +444,7 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
         }
 
         _time.Now = At("2026-10-28T10:00:00Z");
-        await CreateJob().RunAsync();
+        await job.RunAsync();
 
         Assert.That(_email.Attempted, Is.Empty);
     }
@@ -548,28 +552,18 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
     }
 
     [Test]
-    public async Task EvaluatedMarker_TwoWritesLeaveExactlyOneWellFormedRow()
+    public async Task PodRestartedMidWeek_ReEvaluates_AndSendsWhatHasBecomeDue()
     {
-        await using (var db1 = FreshDb())
-        await using (var db2 = FreshDb())
-        {
-            await Task.WhenAll(
-                ChemicalDigestJob.MarkEvaluatedAsync(db1, "2026-10-19T05:00:00.0000000Z"),
-                ChemicalDigestJob.MarkEvaluatedAsync(db2, "2026-10-19T05:00:00.0000000Z"));
-        }
+        // The week marker lives in memory per pod (accepted): a restart forgets it.
+        var (property, _) = await ArrangeAsync(possession: FarAway);
+        await CreateJob().RunAsync();
+        var location = await CreateLocationAsync(property.Id, "Lade");
+        var due = await AddChemicalAsync("Basta", possession: AlreadyPassed);
+        await CreatePlacementAsync(location.Id, due, registeredAt: LongAgo);
+        _time.Now = At("2026-10-28T10:00:00Z");
 
-        await using (var db = FreshDb())
-        {
-            await ChemicalDigestJob.MarkEvaluatedAsync(db, "2026-10-26T06:00:00.0000000Z");
-        }
+        await CreateJob().RunAsync();
 
-        await using var check = FreshDb();
-        var rows = await check.PluginConfigurationValues.AsNoTracking()
-            .Where(x => x.Name == ChemicalDigestJob.EvaluatedSlotKey).ToListAsync();
-        Assert.That(rows, Has.Count.EqualTo(1));
-        Assert.That(rows[0].Value, Is.EqualTo("2026-10-26T06:00:00.0000000Z"));
-        Assert.That(rows[0].WorkflowState, Is.EqualTo(Constants.WorkflowStates.Created));
-        Assert.That(rows[0].CreatedAt.Year, Is.GreaterThan(2000));
-        Assert.That(rows[0].Version, Is.GreaterThanOrEqualTo(1));
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
     }
 }
