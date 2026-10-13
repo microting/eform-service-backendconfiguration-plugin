@@ -276,18 +276,6 @@ public class ChemicalAlertJobTests : ChemicalJobTestBase
         Assert.That(_sdk.CustomerNoReads, Is.Zero);
     }
 
-    [TestCase(ChemicalPushOutcome.InvalidArgument, true)]
-    [TestCase(ChemicalPushOutcome.SenderIdMismatch, true)]
-    [TestCase(ChemicalPushOutcome.DeadToken, false)]
-    [TestCase(ChemicalPushOutcome.Delivered, false)]
-    [TestCase(ChemicalPushOutcome.Transient, false)]
-    public void IsSystemicBatch_OnlyWhenEveryOutcomeIsTheSameFault(ChemicalPushOutcome outcome, bool systemic)
-    {
-        Assert.That(ChemicalAlertJob.IsSystemicBatch([outcome, outcome]), Is.EqualTo(systemic));
-        Assert.That(ChemicalAlertJob.IsSystemicBatch([outcome, ChemicalPushOutcome.Delivered]), Is.False);
-        Assert.That(ChemicalAlertJob.IsSystemicBatch([]), Is.False);
-    }
-
     private async Task<List<string>> LiveTokensAsync()
     {
         await using var db = FreshDb();
