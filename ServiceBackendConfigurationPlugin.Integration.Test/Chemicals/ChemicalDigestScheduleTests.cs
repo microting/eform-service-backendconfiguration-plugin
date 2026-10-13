@@ -6,7 +6,7 @@ using NUnit.Framework;
 using ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
 
 /// <summary>
-/// "Monday 07:00 Europe/Copenhagen" (spec §9) on both sides of DST:
+/// The latest "Monday 07:00 Europe/Copenhagen" slot of the current ISO week (spec §9) on both sides of DST:
 /// CEST (UTC+2) → slot 05:00 UTC, CET (UTC+1) → slot 06:00 UTC.
 /// DST ends 2026-10-25 and starts 2027-03-28.
 /// </summary>
@@ -19,12 +19,15 @@ public class ChemicalDigestScheduleTests
     [TestCase("2026-10-19T04:59:00Z", null)]                    // Mon 06:59 CEST
     [TestCase("2026-10-19T05:00:00Z", "2026-10-19T05:00:00Z")]  // Mon 07:00 CEST
     [TestCase("2026-10-19T21:59:00Z", "2026-10-19T05:00:00Z")]  // Mon 23:59 CEST
-    [TestCase("2026-10-19T22:00:00Z", null)]                    // Tue 00:00 CEST
-    [TestCase("2026-10-25T06:00:00Z", null)]                    // Sunday of the switch
+    [TestCase("2026-10-19T22:00:00Z", "2026-10-19T05:00:00Z")]  // Tue 00:00 CEST: catch-up for Monday's slot
+    [TestCase("2026-10-25T06:00:00Z", "2026-10-19T05:00:00Z")]  // Sunday of the switch: last Monday's slot, same week
     [TestCase("2026-10-26T05:30:00Z", null)]                    // Mon 06:30 CET
     [TestCase("2026-10-26T06:00:00Z", "2026-10-26T06:00:00Z")]  // Mon 07:00 CET
     [TestCase("2026-10-26T22:59:00Z", "2026-10-26T06:00:00Z")]  // Mon 23:59 CET
-    [TestCase("2026-10-27T06:00:00Z", null)]                    // Tuesday
+    [TestCase("2026-10-27T06:00:00Z", "2026-10-26T06:00:00Z")]  // Tuesday after the switch (CET slot)
+    [TestCase("2026-10-28T10:00:00Z", "2026-10-26T06:00:00Z")]  // Wednesday
+    [TestCase("2026-10-25T22:59:00Z", "2026-10-19T05:00:00Z")]  // Sunday 23:59 CET: still the CEST slot of the week
+    [TestCase("2027-03-31T10:00:00Z", "2027-03-29T05:00:00Z")]  // Wednesday after the spring switch
     [TestCase("2027-03-22T05:59:00Z", null)]                    // Mon 06:59 CET
     [TestCase("2027-03-22T06:00:00Z", "2027-03-22T06:00:00Z")]  // Mon 07:00 CET
     [TestCase("2027-03-29T04:59:00Z", null)]                    // Mon 06:59 CEST

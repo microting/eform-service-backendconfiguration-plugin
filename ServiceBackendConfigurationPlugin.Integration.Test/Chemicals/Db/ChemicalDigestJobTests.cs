@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microting.eForm.Infrastructure.Constants;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.EformBackendConfigurationBase.Infrastructure.Enum;
 using NUnit.Framework;
@@ -55,12 +56,12 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
     private static async Task<List<ChemicalAlertLog>> EmailLogsAsync()
     {
         await using var db = FreshDb();
-        return await db.ChemicalAlertLogs.AsNoTracking().Where(x => x.Channel == ChemicalAlertChannelEnum.Email).ToListAsync();
+        return await db.ChemicalAlertLogs.AsNoTracking().Where(x => x.Channel == ChemicalAlertChannelEnum.Email
+                                                       && x.WorkflowState != Constants.WorkflowStates.Removed).ToListAsync();
     }
 
-    [TestCase("2026-10-26T05:59:00Z")] // Monday 06:59 CET
-    [TestCase("2026-10-27T06:10:00Z")] // Tuesday
-    public async Task OutsideTheWindow_SendsNothing(string utcNow)
+    [TestCase("2026-10-26T05:59:00Z")] // Monday 06:59 CET: this week's slot has not started
+    public async Task BeforeThisWeeksSlot_SendsNothing(string utcNow)
     {
         await ArrangeAsync();
         _time.Now = At(utcNow);
@@ -234,10 +235,10 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
     }
 
     [Test]
-    public async Task EmailNotConfigured_SendsNothing()
+    public async Task MissingSendGridKey_SendsNothing()
     {
         await ArrangeAsync();
-        _email.Configured = false;
+        _email.Key = null;
 
         await CreateJob().RunAsync();
 
@@ -270,5 +271,141 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
         await CreateJob().RunAsync();
 
         Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task WednesdayWithoutALogForMondaysSlot_SendsOnce_ThenNothing()
+    {
+        // The pod was down on Monday: the most recent slot (Mon 2026-10-26 06:00 UTC) is sent late, once.
+        await ArrangeAsync(possession: FarAway, registeredAt: At("2026-10-22T08:00:00Z").UtcDateTime);
+        await ArrangeAsync(propertyName: "Nordgården");
+        _time.Now = At("2026-10-28T10:00:00Z");
+
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+
+        _time.Now = At("2026-10-28T11:00:00Z");
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2));
+    }
+
+    [Test]
+    public async Task CatchUp_KeepsTheNewRegistrationWindowOfThatSlot()
+    {
+        var (property, _) = await ArrangeAsync();
+        var location = await CreateLocationAsync(property.Id, "Lade");
+        var inWindow = await AddChemicalAsync("Basta", possession: FarAway);
+        await CreatePlacementAsync(location.Id, inWindow, registeredAt: At("2026-10-22T08:00:00Z").UtcDateTime);
+        var afterSlot = await AddChemicalAsync("Senere Middel", possession: FarAway);
+        await CreatePlacementAsync(location.Id, afterSlot, registeredAt: At("2026-10-27T08:00:00Z").UtcDateTime);
+        _time.Now = At("2026-10-28T10:00:00Z");
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted[0].PlainText, Does.Contain("Basta"));
+        Assert.That(_email.Attempted[0].PlainText, Does.Not.Contain("Senere Middel"));
+    }
+
+    [Test]
+    public async Task TheClaimIsWrittenBeforeTheFirstSend()
+    {
+        await ArrangeAsync();
+        var claimsAtFirstSend = -1;
+        _email.BeforeSend = async _ =>
+        {
+            if (claimsAtFirstSend < 0)
+            {
+                claimsAtFirstSend = (await EmailLogsAsync()).Count;
+            }
+        };
+
+        await CreateJob().RunAsync();
+
+        Assert.That(claimsAtFirstSend, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task PodStoppedMidRun_TheRestartDoesNotResend()
+    {
+        await ArrangeAsync();
+        _email.Crashes = e => e.To == "b@example.com";
+
+        Assert.That(async () => await CreateJob().RunAsync(), Throws.InstanceOf<OperationCanceledException>());
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2), "a was mailed, then the pod stopped at b");
+
+        var restarted = new FakeChemicalEmailSender();
+        _time.Now = RunTime.AddMinutes(5);
+        await new ChemicalDigestJob(DbHelper, ChemicalHelper, _sdk, restarted, _time).RunAsync();
+
+        Assert.That(restarted.Attempted, Is.Empty);
+    }
+
+    [Test]
+    public async Task SendGridRejectsTheKey_StopsAtTheFirstRecipient_AndReleasesTheClaim()
+    {
+        await ArrangeAsync();
+        _email.AuthFails = _ => true;
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Has.Count.EqualTo(1), "a systemic failure must not be retried once per recipient");
+        Assert.That(await EmailLogsAsync(), Is.Empty);
+
+        _email.AuthFails = _ => false;
+        _time.Now = RunTime.AddHours(1);
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Has.Count.EqualTo(3));
+        Assert.That(await EmailLogsAsync(), Has.Count.EqualTo(1));
+    }
+
+    [Test]
+    public async Task TheKeyIsReadOnceAndHandedToEverySend()
+    {
+        await ArrangeAsync();
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.KeyReads, Is.EqualTo(1));
+        Assert.That(_email.KeysUsed, Is.EqualTo(new[] { "SG.test", "SG.test" }));
+    }
+
+    [Test]
+    public async Task NothingToSend_TheKeyIsNotRead()
+    {
+        await ArrangeAsync(possession: FarAway, registeredAt: RunTime.UtcDateTime.AddDays(-1));
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.KeyReads, Is.EqualTo(0));
+    }
+
+    [Test]
+    public async Task EmptyCustomerNo_SendsNothing_AndLogsNothing()
+    {
+        await ArrangeAsync();
+        _sdk.CustomerNo = "";
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Is.Empty);
+        Assert.That(await EmailLogsAsync(), Is.Empty);
+
+        _sdk.CustomerNo = "4711";
+        _time.Now = RunTime.AddHours(1);
+        await CreateJob().RunAsync();
+        Assert.That(_email.Attempted, Has.Count.EqualTo(2), "the next tick retries once the setting is fixed");
+    }
+
+    [Test]
+    public async Task MissingCustomerNoSetting_SendsNothing()
+    {
+        await ArrangeAsync();
+        _sdk.CustomerNoThrows = true;
+
+        await CreateJob().RunAsync();
+
+        Assert.That(_email.Attempted, Is.Empty);
+        Assert.That(await EmailLogsAsync(), Is.Empty);
     }
 }

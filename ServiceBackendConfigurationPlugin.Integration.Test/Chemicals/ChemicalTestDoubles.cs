@@ -54,20 +54,51 @@ public sealed class FakeChemicalSdkDirectory : IChemicalSdkDirectory
 
 public sealed class FakeChemicalEmailSender : IChemicalEmailSender
 {
-    public bool Configured { get; set; } = true;
+    public string Key { get; set; } = "SG.test";
+
+    public int KeyReads { get; private set; }
 
     /// <summary>Every attempted e-mail, including those that failed.</summary>
     public List<ChemicalDigestEmail> Attempted { get; } = [];
 
+    /// <summary>The key each attempt was made with.</summary>
+    public List<string> KeysUsed { get; } = [];
+
     public Func<ChemicalDigestEmail, bool> Fails { get; set; } = _ => false;
 
-    public bool IsConfigured() => Configured;
+    /// <summary>A 401/403-style systemic failure.</summary>
+    public Func<ChemicalDigestEmail, bool> AuthFails { get; set; } = _ => false;
 
-    public Task SendAsync(ChemicalDigestEmail email)
+    /// <summary>Simulates the pod being stopped mid-run (cancellation is not swallowed by the job).</summary>
+    public Func<ChemicalDigestEmail, bool> Crashes { get; set; } = _ => false;
+
+    /// <summary>Runs before each send, e.g. to observe the database at that moment.</summary>
+    public Func<ChemicalDigestEmail, Task> BeforeSend { get; set; } = _ => Task.CompletedTask;
+
+    public string ReadKey()
+    {
+        KeyReads++;
+        return Key;
+    }
+
+    public async Task SendAsync(string key, ChemicalDigestEmail email)
     {
         Attempted.Add(email);
-        return Fails(email)
-            ? Task.FromException(new InvalidOperationException($"SendGrid answered 500 for {email.To}"))
-            : Task.CompletedTask;
+        KeysUsed.Add(key);
+        await BeforeSend(email);
+        if (Crashes(email))
+        {
+            throw new OperationCanceledException();
+        }
+
+        if (AuthFails(email))
+        {
+            throw new ChemicalEmailAuthException("SendGrid answered 401 for a chemical digest.");
+        }
+
+        if (Fails(email))
+        {
+            throw new InvalidOperationException("SendGrid answered 500 for a chemical digest.");
+        }
     }
 }
