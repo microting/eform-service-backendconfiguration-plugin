@@ -119,10 +119,6 @@ public class AdhocReminderJob : IJob
     /// </summary>
     public const string FirebaseAppName = "microting-adhoc";
 
-    // Serialises the first tick's FirebaseApp.Create; see
-    // EnsureAdhocMessaging for why that call must happen at most once.
-    private static readonly object FirebaseInitLock = new();
-
     // "Log once + skip" latch for missing credentials; resets when the key
     // appears so a later removal logs again.
     private static bool _missingCredentialsLogged;
@@ -509,38 +505,6 @@ public class AdhocReminderJob : IJob
     /// Public so AdhocFirebaseAppIsolationTests can assert on the very client
     /// the hourly tick sends through, instead of a re-stated copy of it.
     /// </summary>
-    public static FirebaseMessaging EnsureAdhocMessaging(string serviceAccountJson)
-    {
-        var app = FirebaseApp.GetInstance(FirebaseAppName);
-        if (app == null)
-        {
-            lock (FirebaseInitLock)
-            {
-                // Re-read inside the lock: FirebaseApp.Create THROWS
-                // ArgumentException when an app of this name already exists,
-                // so a racing first tick must observe the winner's app rather
-                // than attempt a second Create. GetInstance returns null for
-                // an absent app, which is what makes that check possible.
-                app = FirebaseApp.GetInstance(FirebaseAppName);
-                if (app == null)
-                {
-                    var options = new AppOptions
-                    {
-                        // CredentialFactory is the non-obsolete replacement
-                        // for GoogleCredential.FromJson; pinning the generic
-                        // to ServiceAccountCredential also fails fast (into
-                        // the job's try/catch + Sentry) if the configured
-                        // JSON is not a service-account key.
-                        Credential = CredentialFactory
-                            .FromJson<ServiceAccountCredential>(serviceAccountJson)
-                            .ToGoogleCredential()
-                    };
-
-                    app = FirebaseApp.Create(options, FirebaseAppName);
-                }
-            }
-        }
-
-        return FirebaseMessaging.GetMessaging(app);
-    }
+    public static FirebaseMessaging EnsureAdhocMessaging(string serviceAccountJson) =>
+        NamedFirebaseMessaging.Get(FirebaseAppName, serviceAccountJson);
 }

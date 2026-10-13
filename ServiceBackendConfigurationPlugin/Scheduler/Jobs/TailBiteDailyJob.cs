@@ -64,8 +64,6 @@ public class TailBiteDailyJob : IJob
 
     public const string FirebaseAppName = "microting-halebid";
 
-    private static readonly object FirebaseInitLock = new();
-
     private static bool _missingCredentialsLogged;
 
     private readonly BackendConfigurationDbContextHelper _dbContextHelper;
@@ -363,28 +361,6 @@ public class TailBiteDailyJob : IJob
     /// created once (never the process-wide default; see
     /// <see cref="AdhocReminderJob.EnsureAdhocMessaging"/> for why).
     /// </summary>
-    public static FirebaseMessaging EnsureHalebidMessaging(string serviceAccountJson)
-    {
-        var app = FirebaseApp.GetInstance(FirebaseAppName);
-        if (app == null)
-        {
-            lock (FirebaseInitLock)
-            {
-                app = FirebaseApp.GetInstance(FirebaseAppName);
-                if (app == null)
-                {
-                    var options = new AppOptions
-                    {
-                        Credential = CredentialFactory
-                            .FromJson<ServiceAccountCredential>(serviceAccountJson)
-                            .ToGoogleCredential()
-                    };
-
-                    app = FirebaseApp.Create(options, FirebaseAppName);
-                }
-            }
-        }
-
-        return FirebaseMessaging.GetMessaging(app);
-    }
+    public static FirebaseMessaging EnsureHalebidMessaging(string serviceAccountJson) =>
+        NamedFirebaseMessaging.Get(FirebaseAppName, serviceAccountJson);
 }
