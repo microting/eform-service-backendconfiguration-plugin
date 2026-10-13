@@ -27,6 +27,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Factories;
+using ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
 using Microting.eForm.Infrastructure.Models;
 using Microting.EformAngularFrontendBase.Infrastructure.Data;
 using Microting.EformAngularFrontendBase.Infrastructure.Data.Factories;
@@ -300,6 +301,12 @@ public class Core : ISdkEventHandler
                 _container.Register(Component.For<DriveChannelRenewalJob>());
                 _container.Register(Component.For<DriveTokenKeepaliveJob>());
                 _container.Register(Component.For<DriveReconcileJob>());
+                _container.Install(new ChemicalJobsInstaller(
+                    () => _sdkCore.DbContextHelper.GetDbContext(),
+                    () => _baseDbContext.ConfigurationValues
+                        .Where(x => x.Id == SendGridChemicalEmailSender.SendGridKeyId)
+                        .Select(x => x.Value)
+                        .FirstOrDefault()));
 
                 _bus = _container.Resolve<IBus>();
 
@@ -493,6 +500,30 @@ public class Core : ISdkEventHandler
             catch (Exception e)
             {
                 Console.WriteLine($"fail: AdhocReminderJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            // flutter-chemistry deadline push: acts at the first tick from 05:00 UTC each day
+            // and only when the tenant's flag is on (both checked inside).
+            try
+            {
+                await _container.Resolve<ChemicalAlertJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: ChemicalAlertJob - {e.Message}");
+                SentrySdk.CaptureException(e);
+            }
+
+            // flutter-chemistry weekly digest: acts only from Monday 07:00
+            // Europe/Copenhagen, once per week (both checked inside).
+            try
+            {
+                await _container.Resolve<ChemicalDigestJob>().Execute();
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"fail: ChemicalDigestJob - {e.Message}");
                 SentrySdk.CaptureException(e);
             }
         }

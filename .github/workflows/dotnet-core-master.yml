@@ -88,6 +88,8 @@ jobs:
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     - name: Build the tagged Docker image
       run: docker build . -t microtingas/service-container:latest --build-arg GITVERSION=1.0.0 --build-arg PLUGINVERSION=1.0.0 --build-arg PLUGIN3VERSION=1.0.0 --build-arg PLUGIN4VERSION=1.0.0 --build-arg PLUGIN5VERSION=1.0.0
+    - name: Check the image has tzdata for Europe/Copenhagen
+      run: docker run --rm --entrypoint /bin/sh microtingas/service-container:latest -c 'test -f /usr/share/zoneinfo/Europe/Copenhagen'
     - name: Start the newly build Docker container
       id: docker-run
       run: docker run --name my-container --network data microtingas/service-container:latest "/ConnectionString=host=mariadbtest;Database=420_SDK;user=root;password=secretpassword;port=3306;Convert Zero Datetime = true;SslMode=none;" > docker_run_log 2>&1 &

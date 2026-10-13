@@ -27,9 +27,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
-using FirebaseAdmin;
 using FirebaseAdmin.Messaging;
-using Google.Apis.Auth.OAuth2;
 using Microsoft.EntityFrameworkCore;
 using Microting.eForm.Infrastructure.Constants;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
@@ -63,8 +61,6 @@ public class TailBiteDailyJob : IJob
     public const string HalebidAppId = "halebid";
 
     public const string FirebaseAppName = "microting-halebid";
-
-    private static readonly object FirebaseInitLock = new();
 
     private static bool _missingCredentialsLogged;
 
@@ -363,28 +359,6 @@ public class TailBiteDailyJob : IJob
     /// created once (never the process-wide default; see
     /// <see cref="AdhocReminderJob.EnsureAdhocMessaging"/> for why).
     /// </summary>
-    public static FirebaseMessaging EnsureHalebidMessaging(string serviceAccountJson)
-    {
-        var app = FirebaseApp.GetInstance(FirebaseAppName);
-        if (app == null)
-        {
-            lock (FirebaseInitLock)
-            {
-                app = FirebaseApp.GetInstance(FirebaseAppName);
-                if (app == null)
-                {
-                    var options = new AppOptions
-                    {
-                        Credential = CredentialFactory
-                            .FromJson<ServiceAccountCredential>(serviceAccountJson)
-                            .ToGoogleCredential()
-                    };
-
-                    app = FirebaseApp.Create(options, FirebaseAppName);
-                }
-            }
-        }
-
-        return FirebaseMessaging.GetMessaging(app);
-    }
+    public static FirebaseMessaging EnsureHalebidMessaging(string serviceAccountJson) =>
+        NamedFirebaseMessaging.Get(FirebaseAppName, serviceAccountJson);
 }
