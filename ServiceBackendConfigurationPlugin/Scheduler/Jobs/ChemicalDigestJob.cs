@@ -244,7 +244,7 @@ public class ChemicalDigestJob(
             catch
             {
                 // All or nothing: a partial claim would suppress the week with nothing sent.
-                db.ChangeTracker.Clear();
+                db.Entry(claim).State = EntityState.Detached; // the failed insert must not be retried by the release
                 await ReleaseAsync(db, claims);
                 throw;
             }

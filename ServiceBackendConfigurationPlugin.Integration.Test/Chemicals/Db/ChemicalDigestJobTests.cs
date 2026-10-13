@@ -432,7 +432,13 @@ public class ChemicalDigestJobTests : ChemicalJobTestBase
         var (property, _) = await ArrangeAsync(recipients: "");
 
         await CreateJob().RunAsync();
-        await SetDigestRecipientsAsync(property.Id, "a@example.com");
+        await using (var db = FreshDb())
+        {
+            var settings = await db.ChemicalPropertySettings.SingleAsync(x => x.PropertyId == property.Id);
+            settings.DigestRecipients = "a@example.com";
+            await db.SaveChangesAsync();
+        }
+
         _time.Now = At("2026-10-28T10:00:00Z");
         await CreateJob().RunAsync();
 
