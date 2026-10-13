@@ -166,4 +166,13 @@ public class ChemicalPushMessagesTests
         Assert.That(message.Apns.Aps.Sound, Is.EqualTo("default"));
         Assert.That(message.Android.Notification.ChannelId, Is.EqualTo("chemical_alerts"));
     }
+
+    [TestCase("")]
+    [TestCase(null)]
+    public void Compose_WithoutCustomerNo_Throws(string customerNo)
+    {
+        Assert.That(() => ChemicalPushMessages.Compose(12, "Gården",
+                [Deadline(ChemicalAlertThresholdEnum.OneMonth, ChemicalDeadlineKindEnum.Sales)], "da", customerNo),
+            Throws.InstanceOf<ArgumentException>());
+    }
 }

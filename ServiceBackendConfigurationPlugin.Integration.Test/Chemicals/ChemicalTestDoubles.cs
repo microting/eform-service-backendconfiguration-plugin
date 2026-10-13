@@ -34,9 +34,20 @@ public sealed class FakeChemicalSdkDirectory : IChemicalSdkDirectory
 
     public string CustomerNo { get; set; } = "4711";
 
+    /// <summary>The real directory throws when the SDK setting is missing.</summary>
+    public bool CustomerNoThrows { get; set; }
+
+    public int CustomerNoReads { get; private set; }
+
     public Task<IReadOnlyDictionary<int, string>> LanguageCodesAsync(IReadOnlyCollection<int> sdkSiteIds) =>
         Task.FromResult<IReadOnlyDictionary<int, string>>(
             Languages.Where(x => sdkSiteIds.Contains(x.Key)).ToDictionary(x => x.Key, x => x.Value));
 
-    public Task<string> CustomerNoAsync() => Task.FromResult(CustomerNo);
+    public Task<string> CustomerNoAsync()
+    {
+        CustomerNoReads++;
+        return CustomerNoThrows
+            ? Task.FromException<string>(new InvalidOperationException("customerNo setting missing"))
+            : Task.FromResult(CustomerNo);
+    }
 }
