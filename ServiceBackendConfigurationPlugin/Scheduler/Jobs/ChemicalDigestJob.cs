@@ -43,8 +43,8 @@ namespace ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 /// need a unique key this plugin's tables do not have). Across pods a duplicate is
 /// possible only in the seconds between the guard check and the claim write:
 /// GET_LOCK is node-local on Galera, and a unique constraint would need a base
-/// migration, so that window is accepted. The claim is all or nothing: a failure
-/// while writing it releases the rows already written.
+/// migration, so that window is accepted. The claim is one transaction: a failure
+/// or a killed process while writing it leaves no partial claim.
 /// </summary>
 public class ChemicalDigestJob(
     BackendConfigurationDbContextHelper dbContextHelper,
@@ -219,7 +219,11 @@ public class ChemicalDigestJob(
         Console.WriteLine($"info: ChemicalDigestJob - sent {delivered} of {digests.Count} digest e-mail(s)");
     }
 
-    /// <summary>One Email log row per distinct action item of the planned digests, written before any send.</summary>
+    /// <summary>
+    /// One Email log row per distinct action item of the planned digests, written before any
+    /// send in ONE transaction (same pattern as ChemicalAlertJob.LogAsync): all rows or none,
+    /// so a failure or a killed process cannot leave a partial claim that suppresses the week.
+    /// </summary>
     private static async Task<List<ChemicalAlertLog>> ClaimAsync(
         BackendConfigurationPnDbContext db, IReadOnlyList<ChemicalDigest> digests, DateTime utcNow)
     {
@@ -229,33 +233,40 @@ public class ChemicalDigestJob(
             .DistinctBy(i => (i.PlacementId, i.Threshold, i.DeadlineKind, i.Status))
             .ToList();
         var claims = new List<ChemicalAlertLog>();
-        foreach (var item in items)
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            var claim = new ChemicalAlertLog
-            {
-                PlacementId = item.PlacementId,
-                Threshold = item.Threshold!.Value,
-                DeadlineKind = item.DeadlineKind,
-                Status = item.Status,
-                Channel = ChemicalAlertChannelEnum.Email,
-                SentAt = utcNow,
-                CreatedByUserId = 0,
-                UpdatedByUserId = 0,
-            };
+            // Detach anything a failed earlier attempt left pending (execution-strategy retry).
+            db.ChangeTracker.Clear();
+            claims.Clear();
+            await using var transaction = await db.Database.BeginTransactionAsync();
             try
             {
-                await claim.Create(db);
+                foreach (var item in items)
+                {
+                    var claim = new ChemicalAlertLog
+                    {
+                        PlacementId = item.PlacementId,
+                        Threshold = item.Threshold!.Value,
+                        DeadlineKind = item.DeadlineKind,
+                        Status = item.Status,
+                        Channel = ChemicalAlertChannelEnum.Email,
+                        SentAt = utcNow,
+                        CreatedByUserId = 0,
+                        UpdatedByUserId = 0,
+                    };
+                    await claim.Create(db);
+                    claims.Add(claim);
+                }
+
+                await transaction.CommitAsync();
             }
             catch
             {
-                // All or nothing: a partial claim would suppress the week with nothing sent.
-                db.Entry(claim).State = EntityState.Detached; // the failed insert must not be retried by the release
-                await ReleaseAsync(db, claims);
+                db.ChangeTracker.Clear();
                 throw;
             }
-
-            claims.Add(claim);
-        }
+        });
 
         return claims;
     }
