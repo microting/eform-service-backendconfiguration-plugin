@@ -41,8 +41,6 @@ using Microting.EformAngularFrontendBase.Infrastructure.Data;
 using Microting.eFormApi.BasePn.Infrastructure.Helpers;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
-using Microting.eFormCaseTemplateBase.Infrastructure.Data;
-using Microting.eFormCaseTemplateBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Data;
 using Microting.ItemsPlanningBase.Infrastructure.Data.Entities;
 using SendGrid;
@@ -882,68 +880,6 @@ public class SearchListJob : IJob
                 scope.SetExtra("plannedRemovals", outcome.PlannedRemovals);
             },
             skip is ChemicalSyncSkip.PartialFeed or ChemicalSyncSkip.MassRemoval ? SentryLevel.Error : SentryLevel.Warning);
-    }
-
-    private async Task<string> GenerateDocumentList(List<DocumentProperty> documentProperties,
-        CaseTemplatePnDbContext caseTemplatePnDbContext,
-        BackendConfigurationPnDbContext backendConfigurationPnDbContext)
-    {
-        string result = "";
-
-        foreach (var documentProperty in documentProperties.OrderBy(x => x.ExpireDate))
-        {
-            var document = await caseTemplatePnDbContext.Documents
-                .Include(x => x.DocumentTranslations)
-                .Include(x => x.DocumentProperties)
-                .FirstOrDefaultAsync(x => x.Id == documentProperty.DocumentId);
-
-            if (document == null)
-            {
-                continue;
-            }
-
-            var folderName = await caseTemplatePnDbContext.FolderTranslations
-                .Where(y => y.LanguageId == 1)
-                .Where(x => x.FolderId == document.FolderId).Select(x => x.Name).FirstAsync();
-
-            var properties = await backendConfigurationPnDbContext.Properties
-                .Where(x => document.DocumentProperties.Select(y => y.PropertyId).Contains(x.Id))
-                .Select(x => x.Name).ToListAsync();
-
-            result += "<tr valign=\"top\">" +
-                      "<td width=\"99\"" +
-                      "style=\"border-left: 1px solid #000000; border-right: 1px solid #000000; border-bottom: 1px solid #000000;  padding: 0 0.08in\">" +
-                      "<p align=\"left\" style=\"orphans: 2; widows: 2\">" +
-                      $"<span>{document.Id}</span></p>" +
-                      "</td>" +
-                      "<td width=\"99\"" +
-                      "style=\"border-left: 1px solid #000000; border-right: 1px solid #000000; border-bottom: 1px solid #000000;  padding: 0 0.08in\">" +
-                      "<p align=\"left\" style=\"orphans: 2; widows: 2\">" +
-                      $"<span>{string.Join("<br>", properties)}</span></p>" +
-                      "</td>" +
-                      "<td width=\"99\"" +
-                      "style=\"border-left: 1px solid #000000; border-right: 1px solid #000000; border-bottom: 1px solid #000000;  padding: 0 0.08in\">" +
-                      "<p align=\"left\" style=\"orphans: 2; widows: 2\">" +
-                      $"<span>{folderName}</span></p>" +
-                      "</td>" +
-                      "<td width=\"99\"" +
-                      "style=\"border-left: 1px solid #000000; border-right: 1px solid #000000; border-bottom: 1px solid #000000;  padding: 0 0.08in\">" +
-                      "<p align=\"left\" style=\"orphans: 2; widows: 2\">" +
-                      $"<span>{document.DocumentTranslations.First(x => x.LanguageId == 1).Name}</span></p>" +
-                      "</td><td width=\"99\"" +
-                      "style=\"border-left: 1px solid #000000; border-right: 1px solid #000000; border-bottom: 1px solid #000000;  padding: 0 0.08in\">" +
-                      "<p align=\"left\" style=\"orphans: 2; widows: 2\">" +
-                      $"<span>{document.DocumentTranslations.First(x => x.LanguageId == 1).Description}</span></p>" +
-                      "</td>" +
-                      "<td width=\"99\"" +
-                      "style=\"border-left: 1px solid #000000; border-right: 1px solid #000000; border-bottom: 1px solid #000000;  padding: 0 0.08in\">" +
-                      "<p align=\"left\" style=\"orphans: 2; widows: 2\">" +
-                      $"<span>{document.EndAt:dd-MM-yyyy}</span></p>" +
-                      "</td>" +
-                      "</tr>";
-        }
-
-        return result;
     }
 
     private async Task<string> GenerateComplianceList(List<ComplianceModel> complianceModels, string propertyName)
