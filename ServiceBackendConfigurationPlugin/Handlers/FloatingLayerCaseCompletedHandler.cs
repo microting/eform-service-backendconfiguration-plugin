@@ -10,6 +10,7 @@ using Microting.eForm.Infrastructure;
 using Microting.eForm.Infrastructure.Constants;
 using Microting.eForm.Infrastructure.Data.Entities;
 using Microting.eForm.Infrastructure.Models;
+using Microting.eFormApi.BasePn.Infrastructure.Consts;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Enums;
@@ -71,14 +72,8 @@ public class FloatingLayerCaseCompletedHandler(
 
         var statusOrActivity = string.IsNullOrEmpty(statusOrActivityFieldIdAndKey.Key)
             ? ""
-            : await sdkDbContext.FieldOptions
-                .Where(x => x.Key == statusOrActivityFieldIdAndKey.Key)
-                .Where(x => x.FieldId == (int) statusOrActivityFieldIdAndKey.FieldId)
-                .Include(x => x.FieldOptionTranslations)
-                .SelectMany(x => x.FieldOptionTranslations)
-                .Where(x => x.LanguageId == 1) // get only danish
-                .Select(x => x.Text)
-                .FirstOrDefaultAsync();
+            : await GetDanishFieldOptionTextAsync(sdkDbContext, (int) statusOrActivityFieldIdAndKey.FieldId,
+                statusOrActivityFieldIdAndKey.Key);
 
         var listWithStatuses = new List<string>
         {
@@ -326,6 +321,23 @@ public class FloatingLayerCaseCompletedHandler(
         }
     }
 
+
+    public static async Task<string> GetDanishFieldOptionTextAsync(MicrotingDbContext sdkDbContext, int fieldId,
+        string key)
+    {
+        var danishLanguageId = await sdkDbContext.Languages
+            .Where(x => x.LanguageCode == LocaleNames.Danish)
+            .Select(x => x.Id)
+            .FirstOrDefaultAsync();
+
+        return await sdkDbContext.FieldOptions
+            .Where(x => x.Key == key)
+            .Where(x => x.FieldId == fieldId)
+            .SelectMany(x => x.FieldOptionTranslations)
+            .Where(x => x.LanguageId == danishLanguageId)
+            .Select(x => x.Text)
+            .FirstOrDefaultAsync();
+    }
 
     private async Task<Folder> GetTopFolderName(int folderId, MicrotingDbContext dbContext)
     {
