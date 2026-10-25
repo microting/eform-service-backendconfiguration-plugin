@@ -60,10 +60,13 @@ public static class TailBiteReminderSelector
     /// withdrawn, not removed, outbreak open and not removed, not reminded
     /// today. Recipients = the responsible site (only while a non-removed worker of the property) plus all
     /// non-removed managers of the property, distinct. PropertyWorker.WorkerId is an SDK site id.
+    /// Only reminds properties with an enabled, non-removed TailBiteProperty and a non-removed Property.
+    /// Pausing queues nothing: on re-enable each due action gets one reminder, not a backlog.
     /// </summary>
     public static List<TailBiteReminder> Select(
         IQueryable<TailBiteAssessmentAction> actions, IQueryable<TailBiteRiskAssessment> assessments,
-        IQueryable<TailBiteOutbreak> outbreaks, IQueryable<PropertyWorker> propertyWorkers, DateTime todayUtc)
+        IQueryable<TailBiteOutbreak> outbreaks, IQueryable<PropertyWorker> propertyWorkers,
+        IQueryable<TailBiteProperty> tailBiteProperties, IQueryable<Property> properties, DateTime todayUtc)
     {
         var today = todayUtc.Date;
         var tomorrow = today.AddDays(1);
@@ -74,6 +77,9 @@ public static class TailBiteReminderSelector
                          && a.FollowUpDate < tomorrow && a.DoneAt == null && a.WithdrawnAt == null
                          && a.WorkflowState != Constants.WorkflowStates.Removed
                          && o.ClosedAt == null && o.WorkflowState != Constants.WorkflowStates.Removed
+                         && tailBiteProperties.Any(tp => tp.PropertyId == o.PropertyId && tp.Enabled
+                                                         && tp.WorkflowState != Constants.WorkflowStates.Removed)
+                         && properties.Any(pr => pr.Id == o.PropertyId && pr.WorkflowState != Constants.WorkflowStates.Removed)
                          && (a.LastReminderAt == null || a.LastReminderAt < today)
                    select new { a.Id, OutbreakId = o.Id, o.PropertyId, a.Description, a.ResponsibleSiteId }).ToList();
         var propertyIds = due.Select(d => d.PropertyId).Distinct().ToList();

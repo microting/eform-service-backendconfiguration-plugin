@@ -125,7 +125,8 @@ public class TailBiteDailyJob : IJob
     {
         var now = DateTime.UtcNow;
         var reminders = TailBiteReminderSelector.Select(
-            db.TailBiteAssessmentActions, db.TailBiteRiskAssessments, db.TailBiteOutbreaks, db.PropertyWorkers, now);
+            db.TailBiteAssessmentActions, db.TailBiteRiskAssessments, db.TailBiteOutbreaks, db.PropertyWorkers,
+            db.TailBiteProperties, db.Properties, now);
         if (reminders.Count == 0)
         {
             return;

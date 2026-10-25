@@ -51,6 +51,30 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             ResponsibleSiteId = 8, FollowUpDate = followUp, DoneAt = done, WithdrawnAt = withdrawn, LastReminderAt = reminded, WorkflowState = state
         };
 
+        private static List<TailBiteProperty> Enabled(params int[] propertyIds) =>
+            propertyIds.Select(id => new TailBiteProperty
+                { Id = id, PropertyId = id, Enabled = true, WorkflowState = Created }).ToList();
+
+        private static List<Property> Live(params int[] ids) =>
+            ids.Select(id => new Property { Id = id, WorkflowState = Created }).ToList();
+
+        /// <summary>Runs the shipped Select; defaults to property 1 being enabled and live.</summary>
+        private static List<TailBiteReminder> Run(
+            List<TailBiteAssessmentAction> actions, List<TailBiteRiskAssessment> assessments,
+            List<TailBiteOutbreak> outbreaks, List<PropertyWorker> workers,
+            List<TailBiteProperty> props = null, List<Property> live = null) =>
+            TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(), outbreaks.AsQueryable(),
+                workers.AsQueryable(), (props ?? Enabled(1)).AsQueryable(), (live ?? Live(1)).AsQueryable(), Today);
+
+        /// <summary>One open outbreak, assessment and due action per property id (ids 1.. map to ids 100.. / 1..).</summary>
+        private static (List<TailBiteOutbreak> Outbreaks, List<TailBiteRiskAssessment> Assessments,
+            List<TailBiteAssessmentAction> Actions) Chain(params int[] propertyIds) =>
+        (
+            propertyIds.Select(id => new TailBiteOutbreak { Id = id, PropertyId = id, LocationId = 10 + id, WorkflowState = Created }).ToList(),
+            propertyIds.Select(id => new TailBiteRiskAssessment { Id = id * 100, OutbreakId = id, WorkflowState = Created }).ToList(),
+            propertyIds.Select(id => Action(id, id * 100, Today)).ToList()
+        );
+
         [Test]
         public void Selects_DueOpenActions_WithResponsibleAndManagers_SkipsDoneWithdrawnClosedFutureAndRemindedToday()
         {
@@ -82,8 +106,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 new() { PropertyId = 1, WorkerId = 6, TailBiteManager = true, WorkflowState = Constants.WorkflowStates.Removed }
             };
 
-            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
-                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+            var reminders = Run(actions, assessments, outbreaks, workers);
 
             Assert.That(reminders.Select(r => r.ActionId), Is.EqualTo(new[] { 1 }));
             Assert.That(reminders[0].RecipientSiteIds, Is.EquivalentTo(new[] { 7, 8 }));
@@ -100,8 +123,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 new() { PropertyId = 1, WorkerId = 8, TailBiteManager = true, WorkflowState = Created }
             };
 
-            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
-                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+            var reminders = Run(actions, assessments, outbreaks, workers);
 
             Assert.That(reminders.Single().RecipientSiteIds, Is.EqualTo(new[] { 8 }));
         }
@@ -117,8 +139,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
             var actions = new List<TailBiteAssessmentAction> { Action(1, 100, Today) };
             var workers = new List<PropertyWorker> { new() { PropertyId = 1, WorkerId = 8, WorkflowState = Created } };
 
-            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
-                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+            var reminders = Run(actions, assessments, outbreaks, workers);
 
             Assert.That(reminders, Is.Empty);
         }
@@ -135,8 +156,7 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 new() { PropertyId = 1, WorkerId = 8, TailBiteManager = false, WorkflowState = Constants.WorkflowStates.Removed }
             };
 
-            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
-                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+            var reminders = Run(actions, assessments, outbreaks, workers);
 
             Assert.That(reminders.Single().RecipientSiteIds, Is.EqualTo(new[] { 7 }));
         }
@@ -152,10 +172,62 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
                 new() { PropertyId = 1, WorkerId = 8, WorkflowState = Constants.WorkflowStates.Removed }
             };
 
-            var reminders = TailBiteReminderSelector.Select(actions.AsQueryable(), assessments.AsQueryable(),
-                outbreaks.AsQueryable(), workers.AsQueryable(), Today);
+            var reminders = Run(actions, assessments, outbreaks, workers);
 
             Assert.That(reminders.Single().RecipientSiteIds, Is.Empty);
+        }
+
+        [Test]
+        public void Select_PausedMissingOrRemovedTailBiteProperty_GetsNoReminders_EnabledOtherPropertyUnaffected()
+        {
+            var (outbreaks, assessments, actions) = Chain(1, 2, 3, 4);
+            var tailBiteProperties = new List<TailBiteProperty>
+            {
+                new() { Id = 1, PropertyId = 1, Enabled = true, WorkflowState = Created },
+                new() { Id = 2, PropertyId = 2, Enabled = false, WorkflowState = Created },   // paused
+                new() { Id = 3, PropertyId = 3, Enabled = true, WorkflowState = Constants.WorkflowStates.Removed } // removed row
+                // property 4: no row at all
+            };
+
+            var reminders = Run(actions, assessments, outbreaks, new List<PropertyWorker>(),
+                tailBiteProperties, Live(1, 2, 3, 4));
+
+            Assert.That(reminders.Select(r => r.ActionId), Is.EqualTo(new[] { 1 }));
+        }
+
+        [Test]
+        public void Select_PausedThenReenabled_ResumesWithOneReminderPerAction()
+        {
+            var (outbreaks, assessments, actions) = Chain(1);
+            actions[0].FollowUpDate = Today.AddDays(-7); // overdue for a week, never reminded while paused
+            var workers = new List<PropertyWorker>();
+            var property = new TailBiteProperty { Id = 1, PropertyId = 1, Enabled = false, WorkflowState = Created };
+            var props = new List<TailBiteProperty> { property };
+
+            Assert.That(Run(actions, assessments, outbreaks, workers, props), Is.Empty);
+
+            property.Enabled = true;
+
+            Assert.That(Run(actions, assessments, outbreaks, workers, props).Select(r => r.ActionId),
+                Is.EqualTo(new[] { 1 })); // one, not a backlog
+
+            actions[0].LastReminderAt = Today.AddHours(6); // sent today
+            Assert.That(Run(actions, assessments, outbreaks, workers, props), Is.Empty);
+        }
+
+        [Test]
+        public void Select_RemovedProperty_WithEnabledTailBite_GetsNoReminders()
+        {
+            var (outbreaks, assessments, actions) = Chain(1, 2);
+            var properties = new List<Property>
+            {
+                new() { Id = 1, WorkflowState = Created },
+                new() { Id = 2, WorkflowState = Constants.WorkflowStates.Removed }
+            };
+
+            var reminders = Run(actions, assessments, outbreaks, new List<PropertyWorker>(), Enabled(1, 2), properties);
+
+            Assert.That(reminders.Select(r => r.ActionId), Is.EqualTo(new[] { 1 }));
         }
 
         [Test]
