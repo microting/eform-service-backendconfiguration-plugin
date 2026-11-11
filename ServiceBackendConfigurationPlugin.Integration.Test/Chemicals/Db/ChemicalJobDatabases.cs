@@ -38,6 +38,7 @@ public class ChemicalJobDatabases
             chemicals.Database.SetCommandTimeout(CommandTimeoutSeconds);
             chemicals.Database.EnsureDeleted();
             chemicals.Database.EnsureCreated();
+            ChemicalDocsDb.MarkMigrated(chemicals);
         }
 
         using (var sdk = new MicrotingDbContextFactory().CreateDbContext([ConnectionString(SdkDb)]))
