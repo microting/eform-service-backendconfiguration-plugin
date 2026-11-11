@@ -79,6 +79,12 @@ public class ChemicalAlertJob(
         }
         catch (Exception e)
         {
+            if (await ChemicalSchemaGate.ShouldSkipTenantAsync(chemicalDbContextHelper, e))
+            {
+                Console.WriteLine("info: ChemicalAlertJob - chemical schema is not migrated yet (MySQL 1054/1146); skipping this tenant");
+                return;
+            }
+
             Console.WriteLine($"fail: ChemicalAlertJob - {e.Message}");
             SentrySdk.CaptureException(e);
         }
@@ -168,6 +174,12 @@ public class ChemicalAlertJob(
             .ToListAsync();
         var register = await ChemicalRegisterFactsReader.LoadAsync(
             chemicalDbContextHelper, placements.Select(p => p.ChemicalId).Distinct().ToList());
+        if (register == null)
+        {
+            // The plugin has not migrated this tenant's chemical database yet; retry on a later tick.
+            Console.WriteLine("info: ChemicalAlertJob - chemical schema is not migrated yet; skipping this tenant");
+            return false;
+        }
 
         var plan = ChemicalAlertPlanner.Plan(placements, register, sentLog, ChemicalAlertRules.CopenhagenToday(utcNow));
         await StoreObservedStatusAsync(db, plan.ObservedStatusUpdates);

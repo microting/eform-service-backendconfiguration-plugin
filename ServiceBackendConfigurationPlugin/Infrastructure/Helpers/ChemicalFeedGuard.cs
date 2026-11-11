@@ -94,7 +94,7 @@ public static class ChemicalFeedGuard
     /// </summary>
     public static readonly StringComparer RemoteIdComparer = StringComparer.OrdinalIgnoreCase;
 
-    private static readonly JsonSerializerOptions FeedJsonOptions = new()
+    public static readonly JsonSerializerOptions FeedJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault

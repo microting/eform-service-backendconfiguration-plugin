@@ -33,12 +33,7 @@ public class ChemicalJobDatabases
             backendConfiguration.Database.Migrate();
         }
 
-        using (var chemicals = new ChemicalsContextFactory().CreateDbContext([ConnectionString(ChemicalsDb)]))
-        {
-            chemicals.Database.SetCommandTimeout(CommandTimeoutSeconds);
-            chemicals.Database.EnsureDeleted();
-            chemicals.Database.EnsureCreated();
-        }
+        ChemicalDocsDb.Create(ChemicalsDb);
 
         using (var sdk = new MicrotingDbContextFactory().CreateDbContext([ConnectionString(SdkDb)]))
         {

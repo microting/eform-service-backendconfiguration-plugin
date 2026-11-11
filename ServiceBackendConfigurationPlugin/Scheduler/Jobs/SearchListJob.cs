@@ -95,6 +95,14 @@ public class SearchListJob : IJob
                 {
                     Log.LogEvent(
                         "SearchListJob.Task: SearchListJob.Execute got called at 2am - chemicalbase updates");
+                    if (!await IsChemicalSchemaMigratedAsync().ConfigureAwait(false))
+                    {
+                        Log.LogEvent(
+                            $"SearchListJob.Task: chemicalbase updates skipped - chemical schema is not migrated yet ({ChemicalSchemaGate.RequiredMigration} missing)");
+                        break;
+                    }
+
+                    ChemicalRegisterUpsert.ResetRunLatch();
                     const string url = "https://chemicalbase.microting.com/get-all-chemicals";
                     using var client = new HttpClient();
                     var outcome = await ChemicalFeedGuard.RunAsync(
@@ -107,6 +115,13 @@ public class SearchListJob : IJob
                 }
                 catch (Exception e)
                 {
+                    if (await ChemicalSchemaGate.ShouldSkipTenantAsync(_chemicalDbContextHelper, e))
+                    {
+                        Log.LogEvent(
+                            "SearchListJob.Task: chemicalbase updates skipped - the chemical schema is not migrated yet (MySQL 1054/1146)");
+                        break;
+                    }
+
                     Console.WriteLine($"fail: {e.Message}");
                     Console.WriteLine($"fail: {e.StackTrace}");
                     SentrySdk.CaptureException(e);
@@ -743,6 +758,12 @@ public class SearchListJob : IJob
     }
 
 
+    private async Task<bool> IsChemicalSchemaMigratedAsync()
+    {
+        await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
+        return await ChemicalSchemaGate.IsMigratedAsync(chemicalsDbContext).ConfigureAwait(false);
+    }
+
     private async Task<IReadOnlyCollection<string>> LoadActiveLocalRemoteIds()
     {
         await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
@@ -752,79 +773,9 @@ public class SearchListJob : IJob
             .ToListAsync().ConfigureAwait(false);
     }
 
-    /// <summary>Upserts one feed chemical, matched on RemoteId (see ChemicalFeedGuard).</summary>
-    private async ValueTask UpsertChemical(Chemical chemical, CancellationToken ct)
-    {
-        await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
-        var localRows = await chemicalsDbContext.Chemicals
-            .Include(x => x.Products)
-            .Where(x => x.RemoteId == chemical.RemoteId)
-            .ToListAsync(ct).ConfigureAwait(false);
-        var c = ChemicalFeedGuard.PickLocalMatch(localRows);
-        if (c == null)
-        {
-            Console.WriteLine($"info: Chemical does not exist, so creating : {chemical.Name}");
-            await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
-            return;
-        }
-
-        if (ChemicalFeedGuard.TryRestore(c))
-        {
-            Console.WriteLine($"info: Chemical was removed locally but is in the feed again, restoring : {chemical.Name}");
-        }
-
-        // Keys and names follow the feed, so a changed RegistrationNo never leaves a stale
-        // local value behind. Blank feed values never overwrite local ones.
-        ChemicalFeedGuard.CopyIdentity(c, chemical);
-
-        c.Use = chemical.Use;
-        c.Verified = chemical.Verified;
-        c.AuthorisationDate = chemical.AuthorisationDate;
-        c.AuthorisationExpirationDate = chemical.AuthorisationExpirationDate;
-        c.AuthorisationTerminationDate = chemical.AuthorisationTerminationDate;
-        c.UseAndPossesionDeadline = chemical.UseAndPossesionDeadline;
-        c.PossessionDeadline = chemical.PossessionDeadline;
-        c.SalesDeadline = chemical.SalesDeadline;
-        c.Status = chemical.Status;
-        c.PesticideUser = chemical.PesticideUser;
-        c.FormulationType = chemical.FormulationType;
-        c.FormulationSubType = chemical.FormulationSubType;
-        c.BiocideAuthorisationType = chemical.BiocideAuthorisationType;
-        c.PesticidePossibleUse = chemical.PesticidePossibleUse;
-        c.PesticideProductGroup = chemical.PesticideProductGroup;
-        c.BiocidePossibleUse = chemical.BiocidePossibleUse;
-        c.BiocideSpecialUse = chemical.BiocideSpecialUse;
-        c.BiocideProductType = chemical.BiocideProductType;
-        c.BiocideUser = chemical.BiocideUser;
-        c.PestControlType = chemical.PestControlType;
-        c.BarcodeValue = chemical.BarcodeValue;
-        c.BiocideProductGroup = chemical.BiocideProductGroup;
-        if (!chemicalsDbContext.AuthorisationHolders.Any(x =>
-                x.RemoteId == chemical.AuthorisationHolder.RemoteId))
-        {
-            var ah = new AuthorisationHolder
-            {
-                RemoteId = chemical.AuthorisationHolder.RemoteId,
-                Name = chemical.AuthorisationHolder.Name,
-                Address = chemical.AuthorisationHolder.Address
-            };
-            await ah.Create(chemicalsDbContext).ConfigureAwait(false);
-            c.AuthorisationHolderId = ah.Id;
-        }
-        else
-        {
-            c.AuthorisationHolderId = chemicalsDbContext.AuthorisationHolders.First(x =>
-                x.RemoteId == chemical.AuthorisationHolder.RemoteId).Id;
-        }
-
-        // Products carry no id in the feed: see ChemicalProductMatcher for how they are matched.
-        // Local products the feed no longer lists are left untouched.
-        await ChemicalProductMatcher.ReconcileAsync(chemical.Products?.ToList() ?? [], c.Products, c.Id,
-            product => product.Update(chemicalsDbContext),
-            product => product.Create(chemicalsDbContext)).ConfigureAwait(false);
-
-        await c.Update(chemicalsDbContext).ConfigureAwait(false);
-    }
+    /// <summary>Upserts one feed chemical, matched on RemoteId (see ChemicalRegisterUpsert).</summary>
+    private ValueTask UpsertChemical(Chemical chemical, CancellationToken ct) =>
+        ChemicalRegisterUpsert.UpsertAsync(_chemicalDbContextHelper, chemical, ct);
 
     /// <summary>
     /// Soft-deletes active local chemicals whose RemoteId is not in the feed. Only reached when
