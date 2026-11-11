@@ -22,18 +22,42 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#nullable enable
+
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Entities;
+using ChemicalsBase.Infrastructure.Data.Enums;
 
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
-/// <summary>STUB (red commit).</summary>
+/// <summary>Copies the feed's BMD labels (Label and MinorUseInstructions) into the tenant's ChemicalDocuments.</summary>
 public static class ChemicalLabelSync
 {
+    private static readonly IReadOnlySet<ChemicalDocumentType> Scope =
+        new HashSet<ChemicalDocumentType> { ChemicalDocumentType.Label, ChemicalDocumentType.MinorUseInstructions };
+
+    /// <summary>Danish BMD labels; <c>null</c> feed labels are an old feed and change nothing.</summary>
     public static Task<bool> ApplyAsync(ChemicalsDbContext db, int localChemicalId,
         IReadOnlyList<ChemicalLabelFeedItem>? feedLabels, CancellationToken ct, bool bumpChemical = true) =>
-        Task.FromResult(false);
+        ChemicalDocumentFeedSync.ApplyAsync(db, localChemicalId, Scope, feedLabels?.Select(ToDocument).ToList(), ct,
+            bumpChemical);
+
+    private static ChemicalDocument ToDocument(ChemicalLabelFeedItem label) => new()
+    {
+        Type = label.Type,
+        Source = ChemicalDocumentSource.Bmd,
+        Status = ChemicalDocumentStatus.Active,
+        Language = "da",
+        ContentMd5 = label.FileName,
+        SourcePackaging = label.Packaging,
+        SourceRevisionDate = label.RevisionDate,
+        SourceRevision = label.Revision,
+        RetrievedAt = DateTime.UtcNow,
+        LastSeenAt = DateTime.UtcNow,
+    };
 }

@@ -22,18 +22,40 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#nullable enable
+
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Entities;
+using ChemicalsBase.Infrastructure.Data.Enums;
 
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
-/// <summary>STUB (red commit).</summary>
+/// <summary>Copies the feed's per-language SDS into the tenant's ChemicalDocuments. Products.FileName is not touched here.</summary>
 public static class ChemicalSdsLanguageSync
 {
+    private static readonly IReadOnlySet<ChemicalDocumentType> Scope =
+        new HashSet<ChemicalDocumentType> { ChemicalDocumentType.Sds };
+
+    /// <summary><c>null</c> is an old feed and changes nothing.</summary>
     public static Task<bool> ApplyAsync(ChemicalsDbContext db, int localChemicalId,
         IReadOnlyList<ChemicalSdsFeedItem>? feed, CancellationToken ct, bool bumpChemical = true) =>
-        Task.FromResult(false);
+        ChemicalDocumentFeedSync.ApplyAsync(db, localChemicalId, Scope, feed?.Select(ToDocument).ToList(), ct,
+            bumpChemical);
+
+    private static ChemicalDocument ToDocument(ChemicalSdsFeedItem sds) => new()
+    {
+        Type = ChemicalDocumentType.Sds,
+        Source = ChemicalDocumentSource.Supplier,
+        Status = ChemicalDocumentStatus.Active,
+        Language = sds.Language,
+        ContentMd5 = sds.FileName,
+        SourceRevisionDate = sds.RevisionDate,
+        RetrievedAt = DateTime.UtcNow,
+        LastSeenAt = DateTime.UtcNow,
+    };
 }

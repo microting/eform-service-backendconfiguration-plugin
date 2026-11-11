@@ -75,6 +75,10 @@ public class ChemicalDigestJob(
         {
             await RunAsync();
         }
+        catch (Exception e) when (ChemicalSchemaGate.IsNotMigratedError(e))
+        {
+            Console.WriteLine("info: ChemicalDigestJob - chemical schema is not migrated yet (MySQL 1054/1146); skipping this tenant");
+        }
         catch (Exception e)
         {
             Console.WriteLine($"fail: ChemicalDigestJob - {e.Message}");
@@ -135,6 +139,12 @@ public class ChemicalDigestJob(
             .ToListAsync();
         var register = await ChemicalRegisterFactsReader.LoadAsync(
             chemicalDbContextHelper, placements.Select(p => p.ChemicalId).Distinct().ToList());
+        if (register == null)
+        {
+            // The plugin has not migrated this tenant's chemical database yet; the slot stays open for a later tick.
+            Console.WriteLine("info: ChemicalDigestJob - chemical schema is not migrated yet; skipping this tenant");
+            return;
+        }
 
         var properties = settings
             .Select(s => new ChemicalDigestProperty(s.PropertyId, s.Name, ChemicalDigestRecipients.Parse(s.DigestRecipients),

@@ -22,6 +22,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#nullable enable
+
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -30,16 +33,49 @@ using ChemicalsBase.Infrastructure.Data.Entities;
 
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
-/// <summary>STUB (red commit).</summary>
+/// <summary>Runs the label and SDS copies for one chemical with a single bump, and survives a missing documents table.</summary>
 public static class ChemicalFeedDocuments
 {
-    public static Task<bool> ApplyAsync(ChemicalsDbContext db, int localChemicalId,
+    private static int _missingTableLogged;
+
+    /// <summary>How often the missing-table skip was logged since <see cref="ResetRunLatch"/> (once per run, not per chemical).</summary>
+    public static int MissingTableLogCount => Volatile.Read(ref _missingTableLogged);
+
+    /// <summary>Called at the start of each feed run so the missing-table line is logged once per run.</summary>
+    public static void ResetRunLatch() => Volatile.Write(ref _missingTableLogged, 0);
+
+    /// <summary>
+    /// Applies labels and SDS documents; the chemical is bumped once when either changed. A missing ChemicalDocuments
+    /// table (MySQL 1146: the plugin has not migrated yet) skips the documents and never fails the chemical sync.
+    /// </summary>
+    public static async Task<bool> ApplyAsync(ChemicalsDbContext db, int localChemicalId,
         IReadOnlyList<ChemicalLabelFeedItem>? labels, IReadOnlyList<ChemicalSdsFeedItem>? sdsDocuments,
-        CancellationToken ct) => Task.FromResult(false);
-
-    public static int MissingTableLogCount => 0;
-
-    public static void ResetRunLatch()
+        CancellationToken ct)
     {
+        try
+        {
+            var labelsChanged = await ChemicalLabelSync.ApplyAsync(db, localChemicalId, labels, ct, bumpChemical: false)
+                .ConfigureAwait(false);
+            var sdsChanged = await ChemicalSdsLanguageSync.ApplyAsync(db, localChemicalId, sdsDocuments, ct, bumpChemical: false)
+                .ConfigureAwait(false);
+            if (!labelsChanged && !sdsChanged)
+            {
+                return false;
+            }
+
+            await ChemicalDocumentFeedSync.BumpChemicalAsync(db, localChemicalId, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception e) when (ChemicalSchemaGate.IsMissingTable(e))
+        {
+            // The failed save leaves its entities tracked; drop them so the caller's context stays usable.
+            db.ChangeTracker.Clear();
+            if (Interlocked.CompareExchange(ref _missingTableLogged, 1, 0) == 0)
+            {
+                Console.WriteLine("info: ChemicalDocuments table is missing (plugin not migrated yet); skipping label and SDS documents this run");
+            }
+
+            return false;
+        }
     }
 }

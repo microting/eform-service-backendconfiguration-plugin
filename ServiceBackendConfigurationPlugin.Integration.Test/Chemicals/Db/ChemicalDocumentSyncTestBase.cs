@@ -1,3 +1,5 @@
+#nullable enable
+
 namespace ServiceBackendConfigurationPlugin.Integration.Test.Chemicals.Db;
 
 using System;

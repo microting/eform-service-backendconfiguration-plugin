@@ -47,6 +47,8 @@ public static class ChemicalRegisterUpsert
         {
             Console.WriteLine($"info: Chemical does not exist, so creating : {chemical.Name}");
             await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
+            await ChemicalFeedDocuments.ApplyAsync(chemicalsDbContext, chemical.Id, chemical.Labels, chemical.SdsDocuments, ct)
+                .ConfigureAwait(false);
             return;
         }
 
@@ -106,5 +108,9 @@ public static class ChemicalRegisterUpsert
             product => product.Create(chemicalsDbContext)).ConfigureAwait(false);
 
         await c.Update(chemicalsDbContext).ConfigureAwait(false);
+
+        // Null label/SDS arrays are an old feed: nothing changes. One bump of the chemical covers both copies.
+        await ChemicalFeedDocuments.ApplyAsync(chemicalsDbContext, c.Id, chemical.Labels, chemical.SdsDocuments, ct)
+            .ConfigureAwait(false);
     }
 }
