@@ -4,6 +4,7 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using ChemicalsBase.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using NUnit.Framework;
 using ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
@@ -132,30 +133,41 @@ public class ChemicalSchemaGateTests : ChemicalJobTestBase
     }
 
     [Test]
-    public async Task Alert_job_on_a_tenant_with_missing_column_does_not_throw_out_of_Execute()
+    public async Task Missing_column_on_a_migrated_looking_tenant_hits_1054_in_the_upsert_and_is_not_skipped()
     {
-        const string database = "chemical-gate-job-1054";
-        ChemicalDocsDb.Create(database);
-        try
+        // The jobs' reads project columns and never select AdditionalTradeNames; the nightly upsert reads the whole
+        // Chemicals entity, so that is the real path on which a half-migrated tenant meets MySQL 1054.
+        const string database = "chemical-gate-upsert-1054";
+        await ChemicalDocsDb.UseTemporaryDatabaseAsync(database, async () =>
         {
             await using (var db = ChemicalDocsDb.Open(database))
             {
                 await db.Database.ExecuteSqlRawAsync("ALTER TABLE `Chemicals` DROP COLUMN `AdditionalTradeNames`");
-                ChemicalDocsDb.MarkNotMigrated(db);
             }
 
             ChemicalSchemaGate.ResetCache();
-            await ArrangeAlertAsync();
-            var job = new ChemicalAlertJob(DbHelper, ChemicalDocsDb.Helper(database), _sdk, _push, new FixedTimeProvider(AlertRunTime));
+            var helper = ChemicalDocsDb.Helper(database);
+            var error = await Assert.CatchAsync<Exception>(async () => await ChemicalRegisterUpsert.UpsertAsync(
+                helper, new ChemicalsBase.Infrastructure.Data.Entities.Chemical { RemoteId = "x" }, CancellationToken.None));
 
-            await job.Execute();
+            Assert.That(ChemicalSchemaGate.IsNotMigratedError(error), Is.True, "a real 1054 from the real upsert path");
+            Assert.That(await ChemicalSchemaGate.ShouldSkipTenantAsync(helper, error), Is.False,
+                "the migration row is present, so the job's catch reports it to Sentry instead of skipping");
+        });
+    }
 
-            Assert.That(_push.Sent, Is.Empty);
-        }
-        finally
+    [Test]
+    public async Task Gate_check_failure_warns_sentry_once_per_tenant_not_per_call()
+    {
+        ChemicalSchemaGate.ResetCache();
+        await using var db = ChemicalDocsDb.Open("chemical-gate-database-that-does-not-exist");
+
+        for (var tick = 0; tick < 3; tick++)
         {
-            ChemicalDocsDb.Drop(database);
+            Assert.That(await ChemicalSchemaGate.IsMigratedAsync(db, CancellationToken.None), Is.False);
         }
+
+        Assert.That(ChemicalSchemaGate.FailureWarningCount, Is.EqualTo(1), "one warning per tenant, not one per tick");
     }
 
     [Test]

@@ -233,7 +233,9 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
 
         await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(remoteId, labels, sds), Ct);
 
-        Assert.That((await DocsAsync(id)).Select(d => d.Version), Is.All.EqualTo(1), "no document is rewritten");
+        var docs = await DocsAsync(id);
+        Assert.That(docs, Has.Count.EqualTo(2), "the label and the SDS document exist");
+        Assert.That(docs.Select(d => d.Version), Is.All.EqualTo(1), "no document is rewritten");
         Assert.That(await UpdatedAtAsync(id), Is.EqualTo(before), "and the chemical is not bumped");
         Assert.That(await ChemicalVersionAsync(id), Is.EqualTo(versionBefore));
     }

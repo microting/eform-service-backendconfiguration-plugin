@@ -85,6 +85,7 @@ public static class ChemicalSchemaGate
             Console.WriteLine($"info: chemical schema check failed, treating the tenant as not migrated: {e.GetType().Name}: {e.Message}");
             if (!IsMissingTable(e))
             {
+                Interlocked.Increment(ref _failureWarnings);
                 // A missing history table just means "not migrated"; anything else would switch the chemical jobs off
                 // for this tenant silently, so make it visible.
                 SentrySdk.CaptureMessage($"ChemicalSchemaGate: the migration check failed ({e.GetType().Name}: {e.Message}); chemical jobs skip this tenant",
@@ -120,7 +121,16 @@ public static class ChemicalSchemaGate
         Chain(e).OfType<MySqlException>().Any(x => x.Number == UnknownTable);
 
     /// <summary>Forgets the cached answers (tests).</summary>
-    public static void ResetCache() => Migrated.Clear();
+    public static void ResetCache()
+    {
+        Migrated.Clear();
+        Volatile.Write(ref _failureWarnings, 0);
+    }
+
+    private static int _failureWarnings;
+
+    /// <summary>How many "migration check failed" Sentry warnings were sent since <see cref="ResetCache"/>.</summary>
+    public static int FailureWarningCount => Volatile.Read(ref _failureWarnings);
 
     private static IEnumerable<Exception> Chain(Exception? e)
     {
