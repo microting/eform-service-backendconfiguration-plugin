@@ -241,6 +241,30 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
     }
 
     [Test]
+    public Task Document_changes_roll_back_when_the_chemical_bump_fails() =>
+        ChemicalDocsDb.UseTemporaryDatabaseAsync("chemical-label-sync-bump-fails", async () =>
+        {
+            const string database = "chemical-label-sync-bump-fails";
+            var helper = ChemicalDocsDb.Helper(database);
+            var remoteId = Guid.NewGuid().ToString("N");
+            await ChemicalRegisterUpsert.UpsertAsync(helper, FeedChemical(remoteId), Ct);
+            await using (var setup = ChemicalDocsDb.Open(database))
+            {
+                // Any later write to Chemicals fails, as the bump would on a lost connection or a deadlock.
+                await setup.Database.ExecuteSqlRawAsync(
+                    "CREATE TRIGGER `fail_chemical_update` BEFORE UPDATE ON `Chemicals` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'bump failed'");
+            }
+
+            await Assert.CatchAsync<Exception>(() => ChemicalRegisterUpsert.UpsertAsync(helper, FeedChemical(remoteId,
+                labelsJson: LabelsArray(LabelJson(ChemicalDocumentType.Label, Md5A)),
+                sdsJson: "[" + SdsJson("da", Md5B) + "]"), Ct).AsTask());
+
+            await using var check = ChemicalDocsDb.Open(database);
+            Assert.That(await check.ChemicalDocuments.CountAsync(), Is.Zero,
+                "documents and the chemical bump are one unit: a failed bump leaves no document behind, so a retry repairs it");
+        });
+
+    [Test]
     public Task Missing_documents_table_skips_labels_only() =>
         AssertMissingDocumentsTableSkipsDocumentsOnlyAsync("chemical-label-sync-no-table",
             LabelsArray(LabelJson(ChemicalDocumentType.Label, Md5A)), sdsJson: null);
