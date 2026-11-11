@@ -166,6 +166,81 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
         Assert.That(b.Single().FileName, Is.EqualTo(Md5C), "Products.FileName still comes from the product matcher");
     }
 
+    private async Task<int> ChemicalVersionAsync(int chemicalId)
+    {
+        await using var db = Helper.GetDbContext();
+        return await db.Chemicals.AsNoTracking().Where(c => c.Id == chemicalId).Select(c => c.Version).SingleAsync();
+    }
+
+    private async Task<int> IdOfAsync(string remoteId)
+    {
+        await using var db = Helper.GetDbContext();
+        return await db.Chemicals.Where(c => c.RemoteId == remoteId).Select(c => c.Id).SingleAsync();
+    }
+
+    [Test]
+    public async Task Upsert_bumps_chemical_exactly_once_when_only_documents_change()
+    {
+        var remoteId = Guid.NewGuid().ToString("N");
+        await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(remoteId), Ct);
+        var id = await IdOfAsync(remoteId);
+        await AgeChemicalAsync(id);
+        var before = await UpdatedAtAsync(id);
+        var versionBefore = await ChemicalVersionAsync(id);
+
+        await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(remoteId,
+            labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A) + "]",
+            sdsJson: "[" + SdsJson("da", Md5B) + "]"), Ct);
+
+        Assert.That(await DocsAsync(id), Has.Count.EqualTo(2));
+        Assert.That(await UpdatedAtAsync(id), Is.GreaterThan(before), "a document-only change re-sends the chemical (F5)");
+        Assert.That(await ChemicalVersionAsync(id), Is.EqualTo(versionBefore + 1),
+            "labels and SDS both changed, yet the chemical is bumped once");
+    }
+
+    [Test]
+    public async Task Changed_packaging_or_revision_updates_row_in_place()
+    {
+        var id = await SeedChemicalAsync();
+        await ChemicalLabelSync.ApplyAsync(Db, id,
+            Labels(LabelJson(ChemicalDocumentType.Label, Md5A, "1 L", "2026-03-01T00:00:00", "1")), Ct);
+        var original = (await DocsAsync(id)).Single();
+        await AgeChemicalAsync(id);
+        var before = await UpdatedAtAsync(id);
+        await using var fresh = Helper.GetDbContext();
+
+        var changed = await ChemicalLabelSync.ApplyAsync(fresh, id,
+            Labels(LabelJson(ChemicalDocumentType.Label, Md5A, "5 L", "2026-04-02T00:00:00", "2")), Ct);
+
+        Assert.That(changed, Is.True);
+        var row = (await DocsAsync(id)).Single();
+        Assert.That(row.Id, Is.EqualTo(original.Id));
+        Assert.That(row.SourcePackaging, Is.EqualTo("5 L"));
+        Assert.That(row.SourceRevision, Is.EqualTo("2"));
+        Assert.That(row.SourceRevisionDate, Is.EqualTo(new DateTime(2026, 4, 2)));
+        Assert.That(row.Version, Is.EqualTo(2));
+        Assert.That(await UpdatedAtAsync(id), Is.GreaterThan(before));
+    }
+
+    [Test]
+    public async Task Identical_feed_twice_changes_nothing()
+    {
+        var remoteId = Guid.NewGuid().ToString("N");
+        var labels = "[" + LabelJson(ChemicalDocumentType.Label, Md5A, "1 L", "2026-03-01T10:15:30.123456", "1") + "]";
+        var sds = "[" + SdsJson("en", Md5B, "2026-03-01T10:15:30.123456") + "]";
+        await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(remoteId, labels, sds), Ct);
+        var id = await IdOfAsync(remoteId);
+        await AgeChemicalAsync(id);
+        var before = await UpdatedAtAsync(id);
+        var versionBefore = await ChemicalVersionAsync(id);
+
+        await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(remoteId, labels, sds), Ct);
+
+        Assert.That((await DocsAsync(id)).Select(d => d.Version), Is.All.EqualTo(1), "no document is rewritten");
+        Assert.That(await UpdatedAtAsync(id), Is.EqualTo(before), "and the chemical is not bumped");
+        Assert.That(await ChemicalVersionAsync(id), Is.EqualTo(versionBefore));
+    }
+
     [Test]
     public async Task Missing_documents_table_skips_labels_only()
     {

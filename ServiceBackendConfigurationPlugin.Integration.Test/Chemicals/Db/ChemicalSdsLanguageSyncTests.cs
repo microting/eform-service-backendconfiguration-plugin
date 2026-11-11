@@ -116,6 +116,19 @@ public class ChemicalSdsLanguageSyncTests : ChemicalDocumentSyncTestBase
     }
 
     [Test]
+    public async Task Same_md5_in_two_languages_creates_one_row_no_exception()
+    {
+        var id = await SeedChemicalAsync();
+
+        var changed = await ChemicalSdsLanguageSync.ApplyAsync(Db, id, Sds(SdsJson("da", Md5A), SdsJson("en", Md5A)), Ct);
+
+        Assert.That(changed, Is.True);
+        var docs = await DocsAsync(id);
+        Assert.That(docs, Has.Count.EqualTo(1), "the unique index is (chemical, type, md5): the second language is skipped");
+        Assert.That(docs[0].Language, Is.EqualTo("da"));
+    }
+
+    [Test]
     public async Task Missing_documents_table_skips_sds_documents_only()
     {
         const string database = "chemical-sds-sync-no-table";

@@ -90,6 +90,10 @@ public static class ChemicalSchemaGate
     public static bool IsNotMigratedError(Exception e) =>
         IsMissingTable(e) || Chain(e).OfType<MySqlException>().Any(x => x.Number == UnknownColumn);
 
+    /// <summary>STUB (red commit).</summary>
+    public static Task<bool> ShouldSkipTenantAsync(ChemicalDbContextHelper helper, Exception e) =>
+        Task.FromResult(IsNotMigratedError(e));
+
     /// <summary>MySQL 1146: the table does not exist.</summary>
     public static bool IsMissingTable(Exception e) =>
         Chain(e).OfType<MySqlException>().Any(x => x.Number == UnknownTable);

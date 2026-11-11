@@ -107,6 +107,60 @@ public class ChemicalSchemaGateTests : ChemicalJobTestBase
     }
 
     [Test]
+    public async Task Not_migrated_error_is_skipped_only_when_the_chemical_gate_says_not_migrated()
+    {
+        const string database = "chemical-gate-skip-decision";
+        ChemicalDocsDb.Create(database);
+        try
+        {
+            await using var db = ChemicalDocsDb.Open(database);
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE `Chemicals` DROP COLUMN `AdditionalTradeNames`");
+            var error = await Assert.CatchAsync<Exception>(async () => await db.Chemicals.AsNoTracking().ToListAsync());
+            var helper = ChemicalDocsDb.Helper(database);
+            ChemicalSchemaGate.ResetCache();
+
+            Assert.That(await ChemicalSchemaGate.ShouldSkipTenantAsync(helper, error), Is.False,
+                "the chemical DB is migrated, so a 1054 is another database's problem and must reach Sentry");
+
+            ChemicalDocsDb.MarkNotMigrated(db);
+            ChemicalSchemaGate.ResetCache();
+            Assert.That(await ChemicalSchemaGate.ShouldSkipTenantAsync(helper, error), Is.True);
+            Assert.That(await ChemicalSchemaGate.ShouldSkipTenantAsync(helper, new InvalidOperationException("boom")), Is.False);
+        }
+        finally
+        {
+            ChemicalDocsDb.Drop(database);
+        }
+    }
+
+    [Test]
+    public async Task Alert_job_on_a_tenant_with_missing_column_does_not_throw_out_of_Execute()
+    {
+        const string database = "chemical-gate-job-1054";
+        ChemicalDocsDb.Create(database);
+        try
+        {
+            await using (var db = ChemicalDocsDb.Open(database))
+            {
+                await db.Database.ExecuteSqlRawAsync("ALTER TABLE `Chemicals` DROP COLUMN `AdditionalTradeNames`");
+                ChemicalDocsDb.MarkNotMigrated(db);
+            }
+
+            ChemicalSchemaGate.ResetCache();
+            await ArrangeAlertAsync();
+            var job = new ChemicalAlertJob(DbHelper, ChemicalDocsDb.Helper(database), _sdk, _push, new FixedTimeProvider(AlertRunTime));
+
+            await job.Execute();
+
+            Assert.That(_push.Sent, Is.Empty);
+        }
+        finally
+        {
+            ChemicalDocsDb.Drop(database);
+        }
+    }
+
+    [Test]
     public async Task Missing_column_1054_is_treated_as_not_migrated()
     {
         const string database = "chemical-gate-no-column";
