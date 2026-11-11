@@ -133,18 +133,29 @@ public static class ChemicalRegisterUpsert
     {
         try
         {
-            var labelsChanged = await ChemicalLabelSync.ApplyAsync(db, localChemicalId, feed.Labels, ct, bumpChemical: false)
-                .ConfigureAwait(false);
-            var sdsChanged = await ChemicalSdsLanguageSync.ApplyAsync(db, localChemicalId, feed.SdsDocuments, ct, bumpChemical: false)
-                .ConfigureAwait(false);
-            if (labelsChanged || sdsChanged)
+            // Documents and the bump commit together: a failure between them would leave documents saved with the
+            // chemical's UpdatedAt not advanced, and a retry (which then finds nothing to change) would never repair it.
+            // The context retries transient failures (EnableRetryOnFailure), so the unit runs through its strategy and
+            // starts from a clean tracker on each attempt.
+            await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
-                await ChemicalDocumentFeedSync.BumpChemicalAsync(db, localChemicalId, ct).ConfigureAwait(false);
-            }
+                db.ChangeTracker.Clear();
+                await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+                var labelsChanged = await ChemicalLabelSync.ApplyAsync(db, localChemicalId, feed.Labels, ct, bumpChemical: false)
+                    .ConfigureAwait(false);
+                var sdsChanged = await ChemicalSdsLanguageSync.ApplyAsync(db, localChemicalId, feed.SdsDocuments, ct, bumpChemical: false)
+                    .ConfigureAwait(false);
+                if (labelsChanged || sdsChanged)
+                {
+                    await ChemicalDocumentFeedSync.BumpChemicalAsync(db, localChemicalId, ct).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+            }).ConfigureAwait(false);
         }
         catch (Exception e) when (ChemicalSchemaGate.IsMissingTable(e))
         {
-            // The failed save leaves its entities tracked; drop them so the caller's context stays usable.
+            // The transaction rolled back; drop the entities the failed save left tracked.
             db.ChangeTracker.Clear();
             if (Interlocked.CompareExchange(ref _missingTableLogged, 1, 0) == 0)
             {
