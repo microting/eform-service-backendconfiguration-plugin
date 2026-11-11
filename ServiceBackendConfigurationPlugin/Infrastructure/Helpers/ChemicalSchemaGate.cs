@@ -54,6 +54,8 @@ public static class ChemicalSchemaGate
     // Only "migrated" is cached: a migration is never rolled back, while "not yet" must be re-checked on the next run.
     private static readonly ConcurrentDictionary<string, bool> Migrated = new();
 
+    private static readonly ConcurrentDictionary<string, bool> Warned = new();
+
     /// <summary>
     /// True when the migration is in this tenant's __EFMigrationsHistory. One bounded query (5 s); a positive answer is
     /// cached per tenant. Never throws: a failing or slow check counts as not migrated, so the caller skips the tenant.
@@ -83,11 +85,11 @@ public static class ChemicalSchemaGate
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
             Console.WriteLine($"info: chemical schema check failed, treating the tenant as not migrated: {e.GetType().Name}: {e.Message}");
-            if (!IsMissingTable(e))
+            if (!IsMissingTable(e) && Warned.TryAdd(tenant, true))
             {
                 Interlocked.Increment(ref _failureWarnings);
                 // A missing history table just means "not migrated"; anything else would switch the chemical jobs off
-                // for this tenant silently, so make it visible.
+                // for this tenant silently, so make it visible: once per tenant per process, not on every tick.
                 SentrySdk.CaptureMessage($"ChemicalSchemaGate: the migration check failed ({e.GetType().Name}: {e.Message}); chemical jobs skip this tenant",
                     scope => scope.SetFingerprint(["chemical-schema-gate-check-failed"]), SentryLevel.Warning);
             }
@@ -124,6 +126,7 @@ public static class ChemicalSchemaGate
     public static void ResetCache()
     {
         Migrated.Clear();
+        Warned.Clear();
         Volatile.Write(ref _failureWarnings, 0);
     }
 
