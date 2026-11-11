@@ -95,6 +95,8 @@ public abstract class ChemicalDocumentSyncTestBase
                    + "\"remoteId\":\"holder-" + remoteId + "\"},"
                    + "\"classificationAndLabeling\":{\"clp\":{\"hazardPictograms\":[7],\"signalWord\":1,\"hazardStatements\":[]},"
                    + "\"dpd\":{\"riskPhrases\":[]}},"
+                   + "\"barcodeValue\":[],\"biocideUser\":[],\"pesticideProductGroup\":[],\"biocideProductType\":[],"
+                   + "\"pesticidePossibleUse\":[],\"biocidePossibleUse\":[],\"biocideSpecialUse\":[],\"activeSubstances\":[],"
                    + "\"products\":" + productsJson
                    + (labelsJson == null ? "" : ",\"labels\":" + labelsJson)
                    + (sdsJson == null ? "" : ",\"sdsDocuments\":" + sdsJson) + "}";
