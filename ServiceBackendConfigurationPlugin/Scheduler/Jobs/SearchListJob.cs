@@ -95,20 +95,14 @@ public class SearchListJob : IJob
                 {
                     Log.LogEvent(
                         "SearchListJob.Task: SearchListJob.Execute got called at 2am - chemicalbase updates");
-                    bool migrated;
-                    await using (var gateDb = _chemicalDbContextHelper.GetDbContext())
-                    {
-                        migrated = await ChemicalSchemaGate.IsMigratedAsync(gateDb).ConfigureAwait(false);
-                    }
-
-                    if (!migrated)
+                    if (!await IsChemicalSchemaMigratedAsync().ConfigureAwait(false))
                     {
                         Log.LogEvent(
                             $"SearchListJob.Task: chemicalbase updates skipped - chemical schema is not migrated yet ({ChemicalSchemaGate.RequiredMigration} missing)");
                         break;
                     }
 
-                    ChemicalFeedDocuments.ResetRunLatch();
+                    ChemicalRegisterUpsert.ResetRunLatch();
                     const string url = "https://chemicalbase.microting.com/get-all-chemicals";
                     using var client = new HttpClient();
                     var outcome = await ChemicalFeedGuard.RunAsync(
@@ -119,13 +113,15 @@ public class SearchListJob : IJob
                         new ParallelOptions { MaxDegreeOfParallelism = -1 }).ConfigureAwait(false);
                     ReportChemicalSync(outcome);
                 }
-                catch (Exception e) when (ChemicalSchemaGate.IsNotMigratedError(e))
-                {
-                    Log.LogEvent(
-                        "SearchListJob.Task: chemicalbase updates skipped - the chemical schema is not migrated yet (MySQL 1054/1146)");
-                }
                 catch (Exception e)
                 {
+                    if (await ChemicalSchemaGate.ShouldSkipTenantAsync(_chemicalDbContextHelper, e))
+                    {
+                        Log.LogEvent(
+                            "SearchListJob.Task: chemicalbase updates skipped - the chemical schema is not migrated yet (MySQL 1054/1146)");
+                        break;
+                    }
+
                     Console.WriteLine($"fail: {e.Message}");
                     Console.WriteLine($"fail: {e.StackTrace}");
                     SentrySdk.CaptureException(e);
@@ -761,6 +757,12 @@ public class SearchListJob : IJob
         }
     }
 
+
+    private async Task<bool> IsChemicalSchemaMigratedAsync()
+    {
+        await using var chemicalsDbContext = _chemicalDbContextHelper.GetDbContext();
+        return await ChemicalSchemaGate.IsMigratedAsync(chemicalsDbContext).ConfigureAwait(false);
+    }
 
     private async Task<IReadOnlyCollection<string>> LoadActiveLocalRemoteIds()
     {

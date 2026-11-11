@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Entities;
@@ -116,13 +117,44 @@ public abstract class ChemicalDocumentSyncTestBase
         + "\"revisionDate\":" + (revisionDate == null ? "null" : "\"" + revisionDate + "\"") + ","
         + "\"productName\":" + (productName == null ? "null" : "\"" + productName + "\"") + "}";
 
-    protected static List<ChemicalLabelFeedItem> Labels(params string[] items) =>
-        JsonSerializer.Deserialize<List<ChemicalLabelFeedItem>>("[" + string.Join(",", items) + "]",
-            ChemicalFeedGuard.FeedJsonOptions)!;
+    private static List<T> Feed<T>(string[] items) =>
+        JsonSerializer.Deserialize<List<T>>("[" + string.Join(",", items) + "]", ChemicalFeedGuard.FeedJsonOptions)!;
 
-    protected static List<ChemicalSdsFeedItem> Sds(params string[] items) =>
-        JsonSerializer.Deserialize<List<ChemicalSdsFeedItem>>("[" + string.Join(",", items) + "]",
-            ChemicalFeedGuard.FeedJsonOptions)!;
+    protected static List<ChemicalLabelFeedItem> Labels(params string[] items) => Feed<ChemicalLabelFeedItem>(items);
+
+    protected static List<ChemicalSdsFeedItem> Sds(params string[] items) => Feed<ChemicalSdsFeedItem>(items);
+
+    protected static string LabelsArray(params string[] items) => "[" + string.Join(",", items) + "]";
+
+    protected static string ProductsJson(string barcode, string name) =>
+        "[{\"barcode\":\"" + barcode + "\",\"name\":\"" + name + "\",\"fileName\":\"" + Md5C
+        + "\",\"checksum\":\"sum\",\"verified\":true}]";
+
+    /// <summary>
+    /// The plugin has not migrated: the documents table is missing. Upserting a new and then an existing chemical must
+    /// not throw, the chemical and its product still sync, and the skip is logged once for the whole run.
+    /// </summary>
+    protected static Task AssertMissingDocumentsTableSkipsDocumentsOnlyAsync(
+        string database, string? labelsJson, string? sdsJson) =>
+        ChemicalDocsDb.UseTemporaryDatabaseAsync(database, async () =>
+        {
+            await ChemicalDocsDb.DropDocumentTablesAsync(database);
+            var helper = ChemicalDocsDb.Helper(database);
+            var remoteId = Guid.NewGuid().ToString("N");
+            ChemicalRegisterUpsert.ResetRunLatch();
+
+            for (var pass = 0; pass < 2; pass++)
+            {
+                await Assert.DoesNotThrowAsync(() => ChemicalRegisterUpsert.UpsertAsync(helper,
+                    FeedChemical(remoteId, labelsJson, sdsJson, ProductsJson("5700000000017", "Roundup")),
+                    CancellationToken.None).AsTask());
+            }
+
+            Assert.That(ChemicalRegisterUpsert.MissingTableLogCount, Is.EqualTo(1), "logged once per run, not per chemical");
+            await using var check = ChemicalDocsDb.Open(database);
+            var chemical = await check.Chemicals.Include(c => c.Products).SingleAsync(c => c.RemoteId == remoteId);
+            Assert.That(chemical.Products.Single().FileName, Is.EqualTo(Md5C), "chemicals and products still sync");
+        });
 
     protected static string Created => Constants.WorkflowStates.Created;
 

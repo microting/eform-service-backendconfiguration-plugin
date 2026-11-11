@@ -50,7 +50,7 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
     public async Task Labels_applied_for_new_chemical_too()
     {
         var remoteId = Guid.NewGuid().ToString("N");
-        var feed = FeedChemical(remoteId, labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A, "1 L") + "]");
+        var feed = FeedChemical(remoteId, labelsJson: LabelsArray(LabelJson(ChemicalDocumentType.Label, Md5A, "1 L")));
 
         await ChemicalRegisterUpsert.UpsertAsync(Helper, feed, Ct);
 
@@ -143,20 +143,17 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
     [Test]
     public async Task Products_matching_unchanged_by_labels()
     {
-        const string products = "[{\"barcode\":\"5700000000017\",\"name\":\"Roundup 5 L\",\"fileName\":\"" + Md5C
-                                + "\",\"checksum\":\"sum\",\"verified\":true}]";
+        var products = ProductsJson("5700000000017", "Roundup 5 L");
+        var labels = LabelsArray(LabelJson(ChemicalDocumentType.Label, Md5A));
         var withLabels = Guid.NewGuid().ToString("N");
         var without = Guid.NewGuid().ToString("N");
-        await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(without, productsJson: products), Ct);
-        await ChemicalRegisterUpsert.UpsertAsync(Helper,
-            FeedChemical(withLabels, productsJson: products,
-                labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A) + "]"), Ct);
 
-        // Second night: both existing chemicals take the matcher path again.
-        await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(without, productsJson: products), Ct);
-        await ChemicalRegisterUpsert.UpsertAsync(Helper,
-            FeedChemical(withLabels, productsJson: products,
-                labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A) + "]"), Ct);
+        // Two nights: the second takes the existing-chemical matcher path.
+        for (var night = 0; night < 2; night++)
+        {
+            await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(without, productsJson: products), Ct);
+            await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(withLabels, labels, productsJson: products), Ct);
+        }
 
         await using var check = Helper.GetDbContext();
         var a = await ProductsOfAsync(check, without);
@@ -189,7 +186,7 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
         var versionBefore = await ChemicalVersionAsync(id);
 
         await ChemicalRegisterUpsert.UpsertAsync(Helper, FeedChemical(remoteId,
-            labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A) + "]",
+            labelsJson: LabelsArray(LabelJson(ChemicalDocumentType.Label, Md5A)),
             sdsJson: "[" + SdsJson("da", Md5B) + "]"), Ct);
 
         Assert.That(await DocsAsync(id), Has.Count.EqualTo(2));
@@ -242,40 +239,7 @@ public class ChemicalLabelSyncTests : ChemicalDocumentSyncTestBase
     }
 
     [Test]
-    public async Task Missing_documents_table_skips_labels_only()
-    {
-        const string database = "chemical-label-sync-no-table";
-        ChemicalDocsDb.Create(database);
-        try
-        {
-            await using (var setup = ChemicalDocsDb.Open(database))
-            {
-                await setup.Database.ExecuteSqlRawAsync("SET FOREIGN_KEY_CHECKS = 0");
-                await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocumentVersions`");
-                await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocuments`");
-            }
-
-            var helper = ChemicalDocsDb.Helper(database);
-            var remoteId = Guid.NewGuid().ToString("N");
-            const string products = "[{\"barcode\":\"5700000000017\",\"name\":\"Roundup\",\"fileName\":\"" + Md5C
-                                    + "\",\"checksum\":\"sum\",\"verified\":true}]";
-            ChemicalFeedDocuments.ResetRunLatch();
-
-            await Assert.DoesNotThrowAsync(() => ChemicalRegisterUpsert.UpsertAsync(helper, FeedChemical(remoteId,
-                productsJson: products, labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A) + "]"), Ct).AsTask(),
-                "the chemical is created even though the documents table is missing");
-            await Assert.DoesNotThrowAsync(() => ChemicalRegisterUpsert.UpsertAsync(helper, FeedChemical(remoteId,
-                productsJson: products, labelsJson: "[" + LabelJson(ChemicalDocumentType.Label, Md5A) + "]"), Ct).AsTask(),
-                "and an existing chemical is updated");
-
-            Assert.That(ChemicalFeedDocuments.MissingTableLogCount, Is.EqualTo(1), "logged once per run, not per chemical");
-            await using var check = ChemicalDocsDb.Open(database);
-            var chemical = await check.Chemicals.Include(c => c.Products).SingleAsync(c => c.RemoteId == remoteId);
-            Assert.That(chemical.Products.Single().FileName, Is.EqualTo(Md5C), "chemicals and products still sync");
-        }
-        finally
-        {
-            ChemicalDocsDb.Drop(database);
-        }
-    }
+    public Task Missing_documents_table_skips_labels_only() =>
+        AssertMissingDocumentsTableSkipsDocumentsOnlyAsync("chemical-label-sync-no-table",
+            LabelsArray(LabelJson(ChemicalDocumentType.Label, Md5A)), sdsJson: null);
 }

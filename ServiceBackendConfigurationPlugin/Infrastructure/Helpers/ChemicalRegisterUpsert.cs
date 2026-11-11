@@ -26,6 +26,7 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -34,6 +35,14 @@ namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 /// <summary>The nightly register upsert of one feed chemical (extracted from SearchListJob so it can be tested).</summary>
 public static class ChemicalRegisterUpsert
 {
+    private static int _missingTableLogged;
+
+    /// <summary>How often the missing-table skip was logged since <see cref="ResetRunLatch"/> (once per run, not per chemical).</summary>
+    public static int MissingTableLogCount => Volatile.Read(ref _missingTableLogged);
+
+    /// <summary>Called at the start of each feed run so the missing-table line is logged once per run.</summary>
+    public static void ResetRunLatch() => Volatile.Write(ref _missingTableLogged, 0);
+
     /// <summary>Upserts one feed chemical, matched on RemoteId (see ChemicalFeedGuard).</summary>
     public static async ValueTask UpsertAsync(ChemicalDbContextHelper chemicalDbContextHelper, Chemical chemical, CancellationToken ct)
     {
@@ -47,7 +56,7 @@ public static class ChemicalRegisterUpsert
         {
             Console.WriteLine($"info: Chemical does not exist, so creating : {chemical.Name}");
             await chemical.Create(chemicalsDbContext).ConfigureAwait(false);
-            await ChemicalFeedDocuments.ApplyAsync(chemicalsDbContext, chemical.Id, chemical.Labels, chemical.SdsDocuments, ct)
+            await ApplyDocumentsAsync(chemicalsDbContext, chemical.Id, chemical, ct)
                 .ConfigureAwait(false);
             return;
         }
@@ -110,7 +119,37 @@ public static class ChemicalRegisterUpsert
         await c.Update(chemicalsDbContext).ConfigureAwait(false);
 
         // Null label/SDS arrays are an old feed: nothing changes. One bump of the chemical covers both copies.
-        await ChemicalFeedDocuments.ApplyAsync(chemicalsDbContext, c.Id, chemical.Labels, chemical.SdsDocuments, ct)
+        await ApplyDocumentsAsync(chemicalsDbContext, c.Id, chemical, ct)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Copies the feed's labels and per-language SDS, bumping the chemical once when either changed. A missing
+    /// ChemicalDocuments table (MySQL 1146: the plugin has not migrated yet) skips the documents, logged once per run;
+    /// the chemical and its products still sync.
+    /// </summary>
+    private static async Task ApplyDocumentsAsync(
+        ChemicalsDbContext db, int localChemicalId, Chemical feed, CancellationToken ct)
+    {
+        try
+        {
+            var labelsChanged = await ChemicalLabelSync.ApplyAsync(db, localChemicalId, feed.Labels, ct, bumpChemical: false)
+                .ConfigureAwait(false);
+            var sdsChanged = await ChemicalSdsLanguageSync.ApplyAsync(db, localChemicalId, feed.SdsDocuments, ct, bumpChemical: false)
+                .ConfigureAwait(false);
+            if (labelsChanged || sdsChanged)
+            {
+                await ChemicalDocumentFeedSync.BumpChemicalAsync(db, localChemicalId, ct).ConfigureAwait(false);
+            }
+        }
+        catch (Exception e) when (ChemicalSchemaGate.IsMissingTable(e))
+        {
+            // The failed save leaves its entities tracked; drop them so the caller's context stays usable.
+            db.ChangeTracker.Clear();
+            if (Interlocked.CompareExchange(ref _missingTableLogged, 1, 0) == 0)
+            {
+                Console.WriteLine("info: ChemicalDocuments table is missing (plugin not migrated yet); skipping label and SDS documents this run");
+            }
+        }
     }
 }

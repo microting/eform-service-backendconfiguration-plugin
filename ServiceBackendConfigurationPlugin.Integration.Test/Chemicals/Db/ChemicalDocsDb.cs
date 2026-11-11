@@ -1,5 +1,7 @@
 namespace ServiceBackendConfigurationPlugin.Integration.Test.Chemicals.Db;
 
+using System;
+using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using ChemicalsBase.Infrastructure.Data.Factories;
 using Microsoft.EntityFrameworkCore;
@@ -28,6 +30,29 @@ public static class ChemicalDocsDb
         db.Database.EnsureDeleted();
         db.Database.EnsureCreated();
         MarkMigrated(db);
+    }
+
+    /// <summary>Runs <paramref name="body"/> against a fresh private database and always drops it afterwards.</summary>
+    public static async Task UseTemporaryDatabaseAsync(string database, Func<Task> body)
+    {
+        Create(database);
+        try
+        {
+            await body();
+        }
+        finally
+        {
+            Drop(database);
+        }
+    }
+
+    /// <summary>The plugin has not migrated yet: no ChemicalDocuments tables (MySQL 1146 on first use).</summary>
+    public static async Task DropDocumentTablesAsync(string database)
+    {
+        await using var db = Open(database);
+        await db.Database.ExecuteSqlRawAsync("SET FOREIGN_KEY_CHECKS = 0");
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocumentVersions`");
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocuments`");
     }
 
     public static void Drop(string database)

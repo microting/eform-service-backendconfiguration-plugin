@@ -26,11 +26,13 @@ SOFTWARE.
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ChemicalsBase.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using Sentry;
 using MySqlConnector;
 
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
@@ -71,17 +73,24 @@ public static class ChemicalSchemaGate
             var applied = (await db.Database
                 .SqlQuery<long>($"SELECT CAST(COUNT(*) AS SIGNED) AS `Value` FROM `__EFMigrationsHistory` WHERE `MigrationId` = {RequiredMigration}")
                 .ToListAsync(bounded.Token).ConfigureAwait(false)).Single();
-            if (applied == 0)
+            if (applied > 0)
             {
-                return false;
+                Migrated[tenant] = true;
             }
 
-            Migrated[tenant] = true;
-            return true;
+            return applied > 0;
         }
         catch (Exception e) when (!ct.IsCancellationRequested)
         {
-            Console.WriteLine($"info: chemical schema check failed, treating the tenant as not migrated: {e.GetType().Name}");
+            Console.WriteLine($"info: chemical schema check failed, treating the tenant as not migrated: {e.GetType().Name}: {e.Message}");
+            if (!IsMissingTable(e))
+            {
+                // A missing history table just means "not migrated"; anything else would switch the chemical jobs off
+                // for this tenant silently, so make it visible.
+                SentrySdk.CaptureMessage($"ChemicalSchemaGate: the migration check failed ({e.GetType().Name}: {e.Message}); chemical jobs skip this tenant",
+                    scope => scope.SetFingerprint(["chemical-schema-gate-check-failed"]), SentryLevel.Warning);
+            }
+
             return false;
         }
     }
@@ -90,9 +99,21 @@ public static class ChemicalSchemaGate
     public static bool IsNotMigratedError(Exception e) =>
         IsMissingTable(e) || Chain(e).OfType<MySqlException>().Any(x => x.Number == UnknownColumn);
 
-    /// <summary>STUB (red commit).</summary>
-    public static Task<bool> ShouldSkipTenantAsync(ChemicalDbContextHelper helper, Exception e) =>
-        Task.FromResult(IsNotMigratedError(e));
+    /// <summary>
+    /// For a job's catch: true only when <paramref name="e"/> looks like a missing chemical column or table AND the
+    /// chemical database really is not migrated. A 1054/1146 from another database (e.g. backend-configuration) is not
+    /// this tenant's chemical migration problem and must reach Sentry.
+    /// </summary>
+    public static async Task<bool> ShouldSkipTenantAsync(ChemicalDbContextHelper helper, Exception e)
+    {
+        if (!IsNotMigratedError(e))
+        {
+            return false;
+        }
+
+        await using var db = helper.GetDbContext();
+        return !await IsMigratedAsync(db).ConfigureAwait(false);
+    }
 
     /// <summary>MySQL 1146: the table does not exist.</summary>
     public static bool IsMissingTable(Exception e) =>
@@ -101,7 +122,7 @@ public static class ChemicalSchemaGate
     /// <summary>Forgets the cached answers (tests).</summary>
     public static void ResetCache() => Migrated.Clear();
 
-    private static System.Collections.Generic.IEnumerable<Exception> Chain(Exception? e)
+    private static IEnumerable<Exception> Chain(Exception? e)
     {
         for (; e != null; e = e.InnerException)
         {

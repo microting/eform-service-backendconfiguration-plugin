@@ -4,9 +4,7 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using ChemicalsBase.Infrastructure;
 using Microsoft.EntityFrameworkCore;
-using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using NUnit.Framework;
 using ServiceBackendConfigurationPlugin.Infrastructure.Chemicals;
 using ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
@@ -189,11 +187,9 @@ public class ChemicalSchemaGateTests : ChemicalJobTestBase
         ChemicalDocsDb.Create(database);
         try
         {
+            await ChemicalDocsDb.DropDocumentTablesAsync(database);
             await using (var setup = ChemicalDocsDb.Open(database))
             {
-                await setup.Database.ExecuteSqlRawAsync("SET FOREIGN_KEY_CHECKS = 0");
-                await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocumentVersions`");
-                await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocuments`");
                 await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `__EFMigrationsHistory`");
             }
 

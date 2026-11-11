@@ -75,12 +75,14 @@ public class ChemicalDigestJob(
         {
             await RunAsync();
         }
-        catch (Exception e) when (ChemicalSchemaGate.IsNotMigratedError(e))
-        {
-            Console.WriteLine("info: ChemicalDigestJob - chemical schema is not migrated yet (MySQL 1054/1146); skipping this tenant");
-        }
         catch (Exception e)
         {
+            if (await ChemicalSchemaGate.ShouldSkipTenantAsync(chemicalDbContextHelper, e))
+            {
+                Console.WriteLine("info: ChemicalDigestJob - chemical schema is not migrated yet (MySQL 1054/1146); skipping this tenant");
+                return;
+            }
+
             Console.WriteLine($"fail: ChemicalDigestJob - {e.Message}");
             SentrySdk.CaptureException(e);
         }

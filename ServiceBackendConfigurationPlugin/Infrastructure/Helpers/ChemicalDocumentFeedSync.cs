@@ -37,9 +37,6 @@ using Microting.eForm.Infrastructure.Constants;
 
 namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
-/// <summary>A tenant document's identity in the sync: the file's md5 within its type and language.</summary>
-public sealed record FeedDocKey(ChemicalDocumentType Type, string? Language, string ContentMd5);
-
 /// <summary>
 /// The one generic sync behind the label (Task 13) and per-language SDS (Task 13b) copies. Tenant rows only mirror the
 /// central feed (the tenant Source is not provenance; that lives centrally).
@@ -69,47 +66,33 @@ public static class ChemicalDocumentFeedSync
             .ToListAsync(ct).ConfigureAwait(false);
 
         var changed = false;
-        var matched = new HashSet<int>();
-        var seen = new HashSet<FeedDocKey>();
+        var seen = new HashSet<(ChemicalDocumentType Type, string Md5)>();
         foreach (var want in desired.Where(d => scope.Contains(d.Type)))
         {
-            if (!seen.Add(new FeedDocKey(want.Type, want.Language, want.ContentMd5)))
+            // The unique index is (chemical, type, md5), without Language: one md5 is one tenant row, so an md5 the
+            // feed lists again (for another language) is skipped instead of re-created.
+            if (!seen.Add((want.Type, want.ContentMd5)))
             {
                 continue;
             }
 
-            // The unique index is (chemical, type, md5): an md5 already held under another language is adopted.
-            var row = locals.FirstOrDefault(l => l.Type == want.Type && l.Language == want.Language && l.ContentMd5 == want.ContentMd5)
-                      ?? locals.FirstOrDefault(l => l.Type == want.Type && l.ContentMd5 == want.ContentMd5 && !matched.Contains(l.Id));
+            var row = FindLocal(locals, want);
             if (row == null)
             {
                 want.ChemicalId = localChemicalId;
                 await want.Create(db).ConfigureAwait(false);
                 changed = true;
-                continue;
             }
-
-            if (!matched.Add(row.Id))
+            else if (Differs(row, want))
             {
-                continue;
-            }
-
-            if (Differs(row, want))
-            {
-                row.Language = want.Language;
-                row.Source = want.Source;
-                row.Status = ChemicalDocumentStatus.Active;
-                row.SourcePackaging = want.SourcePackaging;
-                row.SourceRevisionDate = want.SourceRevisionDate;
-                row.SourceRevision = want.SourceRevision;
-                row.WorkflowState = Constants.WorkflowStates.Created;
-                row.LastSeenAt = DateTime.UtcNow;
+                ApplyFeedFields(row, want);
                 await row.Update(db).ConfigureAwait(false);
                 changed = true;
             }
         }
 
-        foreach (var gone in locals.Where(l => !matched.Contains(l.Id) && l.WorkflowState != Constants.WorkflowStates.Removed))
+        foreach (var gone in locals.Where(l => l.WorkflowState != Constants.WorkflowStates.Removed
+                                               && !seen.Contains((l.Type, l.ContentMd5))))
         {
             await gone.Delete(db).ConfigureAwait(false);
             changed = true;
@@ -132,6 +115,23 @@ public static class ChemicalDocumentFeedSync
         var chemical = await db.Chemicals.SingleAsync(c => c.Id == localChemicalId, ct).ConfigureAwait(false);
         chemical.UpdatedAt = DateTime.UtcNow;
         await chemical.Update(db).ConfigureAwait(false);
+    }
+
+    /// <summary>The local row for the feed item, removed or not: it is revived through Update, never re-created.</summary>
+    private static ChemicalDocument? FindLocal(IEnumerable<ChemicalDocument> locals, ChemicalDocument want) =>
+        locals.FirstOrDefault(l => l.Type == want.Type && l.ContentMd5 == want.ContentMd5);
+
+    /// <summary>The fields <see cref="Differs"/> compares; keep the two in step.</summary>
+    private static void ApplyFeedFields(ChemicalDocument row, ChemicalDocument want)
+    {
+        row.Language = want.Language;
+        row.Source = want.Source;
+        row.Status = ChemicalDocumentStatus.Active;
+        row.SourcePackaging = want.SourcePackaging;
+        row.SourceRevisionDate = want.SourceRevisionDate;
+        row.SourceRevision = want.SourceRevision;
+        row.WorkflowState = Constants.WorkflowStates.Created;
+        row.LastSeenAt = DateTime.UtcNow;
     }
 
     private static bool Differs(ChemicalDocument row, ChemicalDocument want) =>

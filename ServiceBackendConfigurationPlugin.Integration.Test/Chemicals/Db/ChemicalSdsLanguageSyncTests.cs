@@ -1,12 +1,9 @@
 namespace ServiceBackendConfigurationPlugin.Integration.Test.Chemicals.Db;
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using ChemicalsBase.Infrastructure;
-using ChemicalsBase.Infrastructure.Data.Entities;
 using ChemicalsBase.Infrastructure.Data.Enums;
 using Microsoft.EntityFrameworkCore;
 using NUnit.Framework;
@@ -99,8 +96,7 @@ public class ChemicalSdsLanguageSyncTests : ChemicalDocumentSyncTestBase
     [Test]
     public async Task Products_filename_matching_unchanged()
     {
-        const string products = "[{\"barcode\":\"5700000000024\",\"name\":\"Roundup 1 L\",\"fileName\":\"" + Md5C
-                                + "\",\"checksum\":\"sum\",\"verified\":true}]";
+        var products = ProductsJson("5700000000024", "Roundup 1 L");
         var remoteId = Guid.NewGuid().ToString("N");
         var sds = "[" + SdsJson("da", Md5C) + "," + SdsJson("en", Md5B) + "]";
 
@@ -129,39 +125,7 @@ public class ChemicalSdsLanguageSyncTests : ChemicalDocumentSyncTestBase
     }
 
     [Test]
-    public async Task Missing_documents_table_skips_sds_documents_only()
-    {
-        const string database = "chemical-sds-sync-no-table";
-        ChemicalDocsDb.Create(database);
-        try
-        {
-            await using (var setup = ChemicalDocsDb.Open(database))
-            {
-                await setup.Database.ExecuteSqlRawAsync("SET FOREIGN_KEY_CHECKS = 0");
-                await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocumentVersions`");
-                await setup.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS `ChemicalDocuments`");
-            }
-
-            var helper = ChemicalDocsDb.Helper(database);
-            var remoteId = Guid.NewGuid().ToString("N");
-            const string products = "[{\"barcode\":\"5700000000031\",\"name\":\"Roundup\",\"fileName\":\"" + Md5C
-                                    + "\",\"checksum\":\"sum\",\"verified\":true}]";
-            var sds = "[" + SdsJson("da", Md5C) + "]";
-            ChemicalFeedDocuments.ResetRunLatch();
-
-            await Assert.DoesNotThrowAsync(() => ChemicalRegisterUpsert.UpsertAsync(helper,
-                FeedChemical(remoteId, productsJson: products, sdsJson: sds), Ct).AsTask());
-            await Assert.DoesNotThrowAsync(() => ChemicalRegisterUpsert.UpsertAsync(helper,
-                FeedChemical(remoteId, productsJson: products, sdsJson: sds), Ct).AsTask());
-
-            Assert.That(ChemicalFeedDocuments.MissingTableLogCount, Is.EqualTo(1), "logged once per run, not per chemical");
-            await using var check = ChemicalDocsDb.Open(database);
-            var chemical = await check.Chemicals.Include(c => c.Products).SingleAsync(c => c.RemoteId == remoteId);
-            Assert.That(chemical.Products.Single().FileName, Is.EqualTo(Md5C), "chemicals and products still sync");
-        }
-        finally
-        {
-            ChemicalDocsDb.Drop(database);
-        }
-    }
+    public Task Missing_documents_table_skips_sds_documents_only() =>
+        AssertMissingDocumentsTableSkipsDocumentsOnlyAsync("chemical-sds-sync-no-table",
+            labelsJson: null, sdsJson: "[" + SdsJson("da", Md5C) + "]");
 }
