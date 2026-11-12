@@ -145,5 +145,18 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 
             Assert.That(SelectedTokens(all, 14), Is.EquivalentTo(new[] { "mine-tok" }));
         }
+
+        [Test]
+        public void ReportOnlyInstall_WithoutFcmToken_IsNotSelected()
+        {
+            var all = new List<DeviceToken>
+            {
+                Token("adhoc", 16, "registered-tok"),
+                Token("adhoc", 16, null),
+                Token("adhoc", 16, "")
+            };
+
+            Assert.That(SelectedTokens(all, 16), Is.EquivalentTo(new[] { "registered-tok" }));
+        }
     }
 }

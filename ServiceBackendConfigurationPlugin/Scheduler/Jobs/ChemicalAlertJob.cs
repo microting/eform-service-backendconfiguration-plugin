@@ -230,12 +230,14 @@ public class ChemicalAlertJob(
             .Select(p => p.WorkerId)
             .Distinct();
 
-    /// <summary>Live chemistry-app tokens of the given sites (AppId equality keeps the index usable).</summary>
+    /// <summary>Live chemistry-app tokens of the given sites (AppId equality keeps the index usable);
+    /// report-only installs without an FcmToken are skipped.</summary>
     public static IQueryable<DeviceToken> SelectRecipientTokens(IQueryable<DeviceToken> deviceTokens, List<int> sdkSiteIds) =>
         deviceTokens
             .Where(x => x.AppId == ChemistryAppId)
             .Where(x => x.WorkflowState == Constants.WorkflowStates.Created)
-            .Where(x => sdkSiteIds.Contains(x.SdkSiteId));
+            .Where(x => sdkSiteIds.Contains(x.SdkSiteId))
+            .Where(x => !string.IsNullOrEmpty(x.FcmToken));
 
     /// <summary>Run-wide evidence for the prune decision (see <see cref="PruneSuspectTokensAsync"/>).</summary>
     private sealed class RunTally

@@ -238,6 +238,9 @@ public class AdhocReminderJob : IJob
     /// can rot on a base package bump with nothing here to notice. No test in
     /// this repo verifies it; that needs a live MariaDB.
     ///
+    /// Rows without an FcmToken are report-only installs (ReportInstall) and
+    /// are skipped: an untargeted message would fail the send batch.
+    ///
     /// Public so <c>AdhocReminderRecipientTests</c> can run the shipped
     /// predicate itself instead of a re-stated copy of it.
     /// </summary>
@@ -247,7 +250,8 @@ public class AdhocReminderJob : IJob
         return deviceTokens
             .Where(x => x.AppId == AdhocAppId)
             .Where(x => x.WorkflowState == Constants.WorkflowStates.Created)
-            .Where(x => sdkSiteIds.Contains(x.SdkSiteId));
+            .Where(x => sdkSiteIds.Contains(x.SdkSiteId))
+            .Where(x => !string.IsNullOrEmpty(x.FcmToken));
     }
 
     /// <summary>

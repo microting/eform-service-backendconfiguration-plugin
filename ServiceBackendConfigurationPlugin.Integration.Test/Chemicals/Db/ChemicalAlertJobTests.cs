@@ -461,6 +461,20 @@ public class ChemicalAlertJobTests : ChemicalJobTestBase
     }
 
     [Test]
+    public async Task ReportOnlyInstallWithoutFcmToken_IsNotPushed()
+    {
+        await ArrangeAsync();
+        await AddTokenAsync(501, null, installationId: "report-only-null");
+        await AddTokenAsync(501, "", installationId: "report-only-empty");
+        await EnablePushAsync();
+
+        await CreateJob().RunAsync();
+
+        Assert.That(SentTokens(), Is.EqualTo(new[] { "admin-phone" }));
+        Assert.That(await LogsAsync(), Has.Count.EqualTo(1));
+    }
+
+    [Test]
     public async Task NoDevices_AlertIsStillLogged_SoNoLateBurst()
     {
         var property = await CreatePropertyAsync();

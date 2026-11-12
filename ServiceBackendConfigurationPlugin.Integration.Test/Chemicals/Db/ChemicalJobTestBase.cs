@@ -122,11 +122,12 @@ public abstract class ChemicalJobTestBase
         }.Create(Db);
     }
 
-    protected async Task<DeviceToken> AddTokenAsync(int siteId, string fcmToken, string appId = "chemistry")
+    protected async Task<DeviceToken> AddTokenAsync(
+        int siteId, string fcmToken, string appId = "chemistry", string installationId = null)
     {
         var token = new DeviceToken
         {
-            AppId = appId, InstallationId = $"install-{fcmToken}", FcmToken = fcmToken, SdkSiteId = siteId, Platform = "android",
+            AppId = appId, InstallationId = installationId ?? $"install-{fcmToken}", FcmToken = fcmToken, SdkSiteId = siteId, Platform = "android",
         };
         await token.Create(Db);
         return token;

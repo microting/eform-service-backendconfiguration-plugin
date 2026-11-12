@@ -332,5 +332,25 @@ namespace ServiceBackendConfigurationPlugin.Integration.Test
 
             Assert.That(selected, Is.EquivalentTo(new[] { 1, 5 }));
         }
+
+        [Test]
+        public void SelectRecipientTokens_ReportOnlyInstallWithoutFcmToken_NotSelected()
+        {
+            DeviceToken Reg(int id, string fcmToken) => new()
+            {
+                Id = id, SdkSiteId = 7, AppId = TailBiteDailyJob.HalebidAppId, FcmToken = fcmToken, WorkflowState = Created
+            };
+            var registrations = new List<DeviceToken>
+            {
+                Reg(1, "fcm-1"),  // registered install
+                Reg(2, null),     // report-only install
+                Reg(3, "")        // report-only install
+            };
+
+            var selected = TailBiteDailyJob.SelectRecipientTokens(registrations.AsQueryable(), new List<int> { 7 })
+                .Select(x => x.Id).ToList();
+
+            Assert.That(selected, Is.EqualTo(new[] { 1 }));
+        }
     }
 }

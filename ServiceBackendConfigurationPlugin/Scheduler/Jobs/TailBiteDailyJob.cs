@@ -110,6 +110,7 @@ public class TailBiteDailyJob : IJob
     /// Live halebid-app registrations owned by any of <paramref name="sdkSiteIds"/>.
     /// The AppId predicate must stay: the DeviceTokens table is shared with other
     /// apps minted in other Firebase projects (see AdhocReminderJob.SelectRecipientTokens).
+    /// Report-only installs (no FcmToken) are skipped.
     /// Public so the tests run the shipped predicate.
     /// </summary>
     public static IQueryable<DeviceToken> SelectRecipientTokens(
@@ -118,7 +119,8 @@ public class TailBiteDailyJob : IJob
         return deviceTokens
             .Where(x => x.AppId == HalebidAppId)
             .Where(x => x.WorkflowState == Constants.WorkflowStates.Created)
-            .Where(x => sdkSiteIds.Contains(x.SdkSiteId));
+            .Where(x => sdkSiteIds.Contains(x.SdkSiteId))
+            .Where(x => !string.IsNullOrEmpty(x.FcmToken));
     }
 
     private async Task SendReminders(BackendConfigurationPnDbContext db)
