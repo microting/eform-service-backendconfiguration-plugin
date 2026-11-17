@@ -2,18 +2,18 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microting.eForm" Version="10.0.47" />
-    <PackageReference Include="Microting.EformBackendConfigurationBase" Version="10.0.61" />
-    <PackageReference Include="Microting.ItemsPlanningBase" Version="10.0.43" />
-    <PackageReference Include="Microting.Rebus" Version="10.0.5" />
-    <PackageReference Include="Microting.Rebus.Castle.Windsor" Version="10.0.6" />
-    <PackageReference Include="Microting.Rebus.RabbitMq" Version="10.0.6" />
+    <PackageReference Include="Microting.eForm" Version="11.0.1" />
+    <PackageReference Include="Microting.EformBackendConfigurationBase" Version="11.0.0" />
+    <PackageReference Include="Microting.ItemsPlanningBase" Version="11.0.0" />
+    <PackageReference Include="Microting.Rebus" Version="11.0.0" />
+    <PackageReference Include="Microting.Rebus.Castle.Windsor" Version="11.0.0" />
+    <PackageReference Include="Microting.Rebus.RabbitMq" Version="11.0.0" />
   </ItemGroup>
 
   <ItemGroup>
