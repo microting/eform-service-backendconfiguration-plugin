@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         path: eform-service-backendconfiguration-plugin
@@ -26,28 +26,28 @@ jobs:
         docker pull rabbitmq:latest
         docker run -d --hostname my-rabbit --name some-rabbit --network data -p 5672:5672 -e RABBITMQ_DEFAULT_USER=admin -e RABBITMQ_DEFAULT_PASS=password rabbitmq:latest
     - name: 'Preparing Debian Service checkout'
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
         repository: microting/eform-debian-service
         ref: stable
         path: eform-debian-service
     - name: 'Preparing items planning checkout'
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
         repository: microting/eform-service-items-planning-plugin
         ref: stable
         path: eform-service-items-planning-plugin
     - name: 'Preparing workflow checkout'
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
         repository: microting/eform-service-workflow-plugin
         ref: stable
         path: eform-service-workflow-plugin
     - name: 'Preparing TimePlanning checkout'
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
         repository: microting/eform-service-timeplanning-plugin
@@ -70,9 +70,9 @@ jobs:
         docker exec -i mariadbtest mysql -u root --password=secretpassword -e 'create database `420_chemical-base-plugin`'
         docker exec -i mariadbtest mysql -u root --password=secretpassword 420_chemical-base-plugin < eform-service-backendconfiguration-plugin/420_chemical-base-plugin.sql
     - name: Setup .NET Core
-      uses: actions/setup-dotnet@v1
+      uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: 10.0.x
+        dotnet-version: 11.0.x
     - name: Install dependencies
       run: dotnet restore eform-service-backendconfiguration-plugin
     - name: Build
@@ -102,7 +102,7 @@ jobs:
         dotnet build --configuration Release eform-service-backendconfiguration-plugin/ci/eformparsed/
     - name: run eformparsed test program
       run: |
-        dotnet eform-service-backendconfiguration-plugin/ci/eformparsed/bin/Release/net10.0/eformparsed.dll
+        dotnet eform-service-backendconfiguration-plugin/ci/eformparsed/bin/Release/net11.0/eformparsed.dll
     - name: Stop the newly build Docker container
       run: docker stop my-container
     - name: Get standard output
