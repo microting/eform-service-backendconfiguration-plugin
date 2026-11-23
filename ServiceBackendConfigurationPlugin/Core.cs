@@ -283,6 +283,9 @@ public class Core : ISdkEventHandler
                 _container.Register(Component.For<IWindsorContainer>().Instance(_container));
                 _container.Register(Component.For<BackendConfigurationDbContextHelper>()
                     .Instance(_backendConfigurationBackendConfigurationDbContextHelper));
+                // One writer per process: it owns the once-per-hour failure warning of the live-update feed.
+                _container.Register(Component.For<TaskChangeFeedWriter>()
+                    .Instance(new TaskChangeFeedWriter(connectionString)));
                 _container.Register(Component.For<ItemsPlanningDbContextHelper>()
                     .Instance(_itemsPlanningDbContextHelper));
                 _container.Register(Component.For<ChemicalDbContextHelper>()

@@ -39,6 +39,7 @@ using Microting.eForm.Infrastructure.Constants;
 using Microting.eForm.Infrastructure.Data.Entities;
 using Microting.EformAngularFrontendBase.Infrastructure.Data;
 using Microting.eFormApi.BasePn.Infrastructure.Helpers;
+using TaskChangeKinds = Microting.EformBackendConfigurationBase.Infrastructure.Const.TaskChangeKinds;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Data;
@@ -61,12 +62,20 @@ public class SearchListJob : IJob
     private readonly ItemsPlanningPnDbContext _itemsPlanningPnDbContext;
     private readonly BaseDbContext _baseDbContext;
     private readonly CaseTemplateDbContextHelper _caseTemplateDbContextHelper;
+    private readonly TaskChangeFeedWriter _taskChangeFeedWriter;
+
+    /// <summary>Feed source of the hour-9 overdue move.</summary>
+    public const string OverdueMoveSource = "SearchListJob.OverdueMove";
+
+    /// <summary>Feed source of the hour-18 ShowExpireDate sweep.</summary>
+    public const string ShowExpireDateSweepSource = "SearchListJob.ShowExpireDateSweep";
 
     public SearchListJob(
         BackendConfigurationDbContextHelper dbContextHelper, ChemicalDbContextHelper chemicalDbContextHelper,
         eFormCore.Core core, ItemsPlanningDbContextHelper itemsPlanningDbContextHelper, BaseDbContext baseDbContext,
-        CaseTemplateDbContextHelper caseTemplateDbContextHelper)
+        CaseTemplateDbContextHelper caseTemplateDbContextHelper, TaskChangeFeedWriter taskChangeFeedWriter)
     {
+        _taskChangeFeedWriter = taskChangeFeedWriter;
         _core = core;
         _baseDbContext = baseDbContext;
         _caseTemplateDbContextHelper = caseTemplateDbContextHelper;
@@ -83,6 +92,22 @@ public class SearchListJob : IJob
     {
         await ExecuteUpdateProperties();
     }
+
+    /// <summary>The overdue move changed this occurrence (its case went to the overdue folder).</summary>
+    public static TaskChangeHint OverdueMoveHint(Compliance compliance, int areaRulePlanningId) =>
+        new(TaskChangeKinds.Changed, compliance.PropertyId, areaRulePlanningId, compliance.PlanningId,
+            compliance.Deadline, compliance.Id);
+
+    /// <summary>
+    /// The sweep soft-deleted this planning: the whole task it belongs to is gone. The writer finds the
+    /// task and property; a planning no task references gives no row.
+    /// </summary>
+    public static TaskChangeHint SweptPlanningHint(int planningId) =>
+        new(TaskChangeKinds.Removed, ItemPlanningId: planningId);
+
+    /// <summary>One hint per planning the sweep actually deleted; a planning that failed was not deleted.</summary>
+    public static List<TaskChangeHint> SweepHints(IEnumerable<PlanningSweepResult> sweepResults) =>
+        sweepResults.Where(x => x.Succeeded).Select(x => SweptPlanningHint(x.PlanningId)).ToList();
 
     private async Task ExecuteUpdateProperties()
     {
@@ -246,6 +271,9 @@ public class SearchListJob : IJob
                             () => _itemsPlanningPnDbContext.ChangeTracker.Clear())
                             .ConfigureAwait(false);
 
+                        // Best effort, never throws; written before the report mail, which can throw.
+                        await _taskChangeFeedWriter.AppendAsync(ShowExpireDateSweepSource, SweepHints(sweepResults));
+
                         foreach (var sweepResult in sweepResults)
                         {
                             if (sweepResult.Succeeded)
@@ -339,6 +367,7 @@ public class SearchListJob : IJob
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                     .ToListAsync();
 
+                var overdueMoveHints = new List<TaskChangeHint>();
                 foreach (var compliance in complianceList)
                 {
                     var areaRulePlanningQuery = _backendConfigurationDbContext.AreaRulePlannings
@@ -383,7 +412,11 @@ public class SearchListJob : IJob
                     var comp = await _backendConfigurationDbContext.Compliances.FirstAsync(x => x.Id == compliance.Id);
                     comp.MovedToExpiredFolder = true;
                     await comp.Update(_backendConfigurationDbContext);
+                    overdueMoveHints.Add(OverdueMoveHint(compliance, areaRulePlanning.Id));
                 }
+
+                // Best effort, never throws; one property row instead of many for a busy property.
+                await _taskChangeFeedWriter.AppendAsync(OverdueMoveSource, overdueMoveHints);
                 break;
             }
             case 8:
