@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using FirebaseAdmin.Messaging;
@@ -43,13 +44,31 @@ public static class TaskReminderMessages
     /// <summary>Android notification channel and iOS thread of task reminders.</summary>
     public const string Channel = "tasks";
 
-    /// <summary>The tag that ties a reminder and its withdraw together on the phone (Android
-    /// notification tag, APNs collapse id).</summary>
+    /// <summary>
+    /// The tag that ties a reminder and its withdraw together on the phone (Android notification tag,
+    /// APNs collapse id, data "tag"): <c>task:&lt;event_id&gt;:&lt;plan_day_key&gt;:&lt;planned start UTC
+    /// yyyyMMddTHHmmZ&gt;</c>. Schedule-specific: after a reschedule the outbox has a row per planned
+    /// start, and a late withdraw of the old start must not remove the replacement's notification.
+    /// Worst case 41 bytes (event id 2147483647), within APNs' 64-byte collapse-id limit.
+    /// </summary>
     public static string Tag(TaskNotification row) =>
-        $"task:{row.AreaRulePlanningId.ToString(CultureInfo.InvariantCulture)}:{row.PlanDayKey}";
+        $"task:{row.AreaRulePlanningId.ToString(CultureInfo.InvariantCulture)}:{row.PlanDayKey}:"
+        + row.PlannedStartUtc.ToString("yyyyMMdd'T'HHmm'Z'", CultureInfo.InvariantCulture);
+
+    private static string Iso(DateTime utc) => utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+
+    private static string Epoch(DateTime utc) =>
+        new DateTimeOffset(DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Transport lifetime until <paramref name="end"/>, at least one second (FCM's TTL).</summary>
+    private static TimeSpan Until(DateTime end, DateTime nowUtc)
+    {
+        var left = end - nowUtc;
+        return left < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : left;
+    }
 
     /// <summary>The visible "task starts soon" reminder for one device token.</summary>
-    public static Message TaskDue(TaskNotification row, string fcmToken)
+    public static Message TaskDue(TaskNotification row, string fcmToken, DateTime nowUtc)
     {
         var tag = Tag(row);
         var data = new Dictionary<string, string>
@@ -59,7 +78,7 @@ public static class TaskReminderMessages
             ["event_id"] = row.AreaRulePlanningId.ToString(CultureInfo.InvariantCulture),
             ["plan_day_key"] = row.PlanDayKey,
             ["property_id"] = row.PropertyId.ToString(CultureInfo.InvariantCulture),
-            ["planned_start_utc"] = row.PlannedStartUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
+            ["planned_start_utc"] = Iso(row.PlannedStartUtc),
             ["tag"] = tag
         };
         if (row.ComplianceId is { } complianceId)
@@ -76,14 +95,21 @@ public static class TaskReminderMessages
 #pragma warning restore CS0618
             Notification = new Notification { Title = row.Title, Body = row.Body },
             Data = data,
+            // Expires at the planned start: an offline phone must not show "starts soon" afterwards
+            // (FCM keeps Android messages up to four weeks by default).
             Android = new AndroidConfig
             {
                 Priority = Priority.High,
+                TimeToLive = Until(row.PlannedStartUtc, nowUtc),
                 Notification = new AndroidNotification { ChannelId = Channel, Tag = tag }
             },
             Apns = new ApnsConfig
             {
-                Headers = new Dictionary<string, string> { ["apns-collapse-id"] = tag },
+                Headers = new Dictionary<string, string>
+                {
+                    ["apns-collapse-id"] = tag,
+                    ["apns-expiration"] = Epoch(row.PlannedStartUtc)
+                },
                 Aps = new Aps { ThreadId = Channel }
             }
         };
@@ -95,7 +121,7 @@ public static class TaskReminderMessages
     /// for a silent push; iOS throttles these and does not deliver them to a force-quit app, so a
     /// withdraw is best effort there.
     /// </summary>
-    public static Message TaskWithdrawn(TaskNotification row, string fcmToken)
+    public static Message TaskWithdrawn(TaskNotification row, string fcmToken, DateTime nowUtc)
     {
         var tag = Tag(row);
         return new Message
@@ -109,15 +135,22 @@ public static class TaskReminderMessages
                 ["v"] = ContractVersion,
                 ["event_id"] = row.AreaRulePlanningId.ToString(CultureInfo.InvariantCulture),
                 ["plan_day_key"] = row.PlanDayKey,
+                ["planned_start_utc"] = Iso(row.PlannedStartUtc),
                 ["tag"] = tag
             },
-            Android = new AndroidConfig { Priority = Priority.High },
+            // Expires with the withdraw's retry cut-off, 24 h after the planned start.
+            Android = new AndroidConfig
+            {
+                Priority = Priority.High,
+                TimeToLive = Until(row.PlannedStartUtc + TaskReminderDeliverer.WithdrawWindow, nowUtc)
+            },
             Apns = new ApnsConfig
             {
                 Headers = new Dictionary<string, string>
                 {
                     ["apns-push-type"] = "background",
-                    ["apns-priority"] = "5"
+                    ["apns-priority"] = "5",
+                    ["apns-expiration"] = Epoch(row.PlannedStartUtc + TaskReminderDeliverer.WithdrawWindow)
                 },
                 Aps = new Aps { ContentAvailable = true }
             }

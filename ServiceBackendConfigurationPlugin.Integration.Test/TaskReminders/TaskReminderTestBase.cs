@@ -90,7 +90,7 @@ public abstract class TaskReminderTestBase
                 "Starter kl. 08:00", "Fodring af kalve · Gården")
         ], createdAt ?? Now);
         return await db.TaskNotifications.AsNoTracking().SingleAsync(x =>
-            x.SdkSiteId == sdkSiteId && x.AreaRulePlanningId == eventId && x.PlanDayKey == day);
+            x.SdkSiteId == sdkSiteId && x.AreaRulePlanningId == eventId && x.PlanDayKey == day && x.PlannedStartUtc == start);
     }
 
     protected static async Task<TaskNotification> RowAsync(long id)

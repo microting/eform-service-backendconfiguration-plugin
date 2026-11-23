@@ -42,6 +42,9 @@ public class TaskReminderDelivererTests : TaskReminderTestBase
     private static string TokenOf(Message message) => message.Token;
 #pragma warning restore CS0618
 
+    private static string Epoch(DateTime utc) =>
+        new DateTimeOffset(utc, TimeSpan.Zero).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     private static IReadOnlyList<TaskReminderSendOutcome> All(IReadOnlyList<Message> messages, MessagingErrorCode code) =>
         messages.Select(_ => new TaskReminderSendOutcome(false, code)).ToList();
 
@@ -74,12 +77,17 @@ public class TaskReminderDelivererTests : TaskReminderTestBase
                 ["property_id"] = "42",
                 ["compliance_id"] = "900",
                 ["planned_start_utc"] = "2026-11-23T07:00:00Z",
-                ["tag"] = "task:7:2026-11-23"
+                ["tag"] = "task:7:2026-11-23:20261123T0700Z"
             }));
             Assert.That(message.Android.Priority, Is.EqualTo(Priority.High));
+            Assert.That(message.Android.TimeToLive, Is.EqualTo(TimeSpan.FromMinutes(10)), "expires at the planned start");
             Assert.That(message.Android.Notification.ChannelId, Is.EqualTo("tasks"));
-            Assert.That(message.Android.Notification.Tag, Is.EqualTo("task:7:2026-11-23"));
-            Assert.That(message.Apns.Headers, Is.EquivalentTo(new Dictionary<string, string> { ["apns-collapse-id"] = "task:7:2026-11-23" }));
+            Assert.That(message.Android.Notification.Tag, Is.EqualTo("task:7:2026-11-23:20261123T0700Z"));
+            Assert.That(message.Apns.Headers, Is.EquivalentTo(new Dictionary<string, string>
+            {
+                ["apns-collapse-id"] = "task:7:2026-11-23:20261123T0700Z",
+                ["apns-expiration"] = Epoch(new DateTime(2026, 11, 23, 7, 0, 0, DateTimeKind.Utc))
+            }));
             Assert.That(message.Apns.Aps.ThreadId, Is.EqualTo("tasks"));
             Assert.That(message.Apns.Aps.ContentAvailable, Is.False);
         });
@@ -363,7 +371,7 @@ public class TaskReminderDelivererTests : TaskReminderTestBase
         await RunAsync(deliverer);
 
         var tags = Sender.AllMessages().Select(x => x.Data["tag"]).ToList();
-        Assert.That(tags, Is.EqualTo(new[] { "task:7:2026-11-23", "task:7:2026-11-23" }), "sent twice in all, same tag");
+        Assert.That(tags, Is.EqualTo(new[] { "task:7:2026-11-23:20261123T0700Z", "task:7:2026-11-23:20261123T0700Z" }), "sent twice in all, same tag");
         Assert.That((await RowAsync(row.Id)).State, Is.EqualTo(TaskNotificationState.Sent));
     }
 
@@ -452,6 +460,170 @@ public class TaskReminderDelivererTests : TaskReminderTestBase
         Assert.That(await TokenStateAsync(dead.Id), Is.EqualTo(Removed));
     }
 
+
+    // ---------------------------------------------------------------- PR #612 review
+
+    [Test]
+    public async Task Withdraw_OnePhoneAcceptsOneTransient_StaysRetryable_ThenWithdrawn()
+    {
+        await TokenAsync(31, "ok");
+        await TokenAsync(31, "flaky");
+        var row = await PlanAsync();
+        await RunAsync();
+        await using (var db = DbHelper.GetDbContext())
+        {
+            await TaskNotificationOutbox.CancelOrWithdrawAsync(db, [row.Id], Now);
+        }
+
+        Sender.Respond = m => m.Select(x => TokenOf(x) == "flaky"
+            ? new TaskReminderSendOutcome(false, MessagingErrorCode.Unavailable)
+            : new TaskReminderSendOutcome(true, null)).ToList();
+        await RunAsync();
+        var afterFirst = await RowAsync(row.Id);
+        Assert.That(afterFirst.State, Is.EqualTo(TaskNotificationState.WithdrawPending),
+            "a phone that failed transiently keeps the withdrawal retryable");
+        Assert.That(afterFirst.LastError, Is.EqualTo("unavailable"));
+
+        Sender.Respond = m => m.Select(_ => new TaskReminderSendOutcome(true, null)).ToList();
+        Now = afterFirst.NextAttemptAtUtc;
+        await RunAsync();
+        Assert.That((await RowAsync(row.Id)).State, Is.EqualTo(TaskNotificationState.Withdrawn));
+    }
+
+    [Test]
+    public async Task RescheduledTask_OldAndNewRowsHaveDifferentTags_InBothMessageKinds()
+    {
+        await TokenAsync(31, "t");
+        var first = await PlanAsync(startsIn: TimeSpan.FromMinutes(10));
+        var moved = await PlanAsync(startsIn: TimeSpan.FromMinutes(40));
+        await RunAsync();
+        await using (var db = DbHelper.GetDbContext())
+        {
+            await TaskNotificationOutbox.CancelOrWithdrawAsync(db, [first.Id], Now);
+        }
+
+        await RunAsync();
+
+        var messages = Sender.AllMessages();
+        var withdraw = messages.Single(x => x.Data["type"] == "task_withdrawn");
+        var replacement = messages.Single(x => x.Data["type"] == "task_due" && x.Data["planned_start_utc"] == "2026-11-23T07:30:00Z");
+        Assert.That(withdraw.Data["tag"], Is.EqualTo("task:7:2026-11-23:20261123T0700Z"));
+        Assert.That(replacement.Data["tag"], Is.EqualTo("task:7:2026-11-23:20261123T0730Z"));
+        Assert.That(replacement.Android.Notification.Tag, Is.EqualTo(replacement.Data["tag"]));
+        Assert.That(replacement.Apns.Headers["apns-collapse-id"], Is.EqualTo(replacement.Data["tag"]));
+        Assert.That(moved.Id, Is.Not.EqualTo(first.Id));
+    }
+
+    [Test]
+    public void Tag_WorstCase_FitsTheApnsCollapseIdLimitOf64Bytes()
+    {
+        var row = new Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities.TaskNotification
+        {
+            AreaRulePlanningId = int.MaxValue, PlanDayKey = "9999-12-31",
+            PlannedStartUtc = new DateTime(9999, 12, 31, 23, 59, 0, DateTimeKind.Utc)
+        };
+
+        var tag = TaskReminderMessages.Tag(row);
+
+        Assert.That(tag, Is.EqualTo("task:2147483647:9999-12-31:99991231T2359Z"));
+        Assert.That(System.Text.Encoding.UTF8.GetByteCount(tag), Is.LessThanOrEqualTo(64));
+    }
+
+    /// <summary>The recipient query took so long that the start passed: nothing is sent, the row expires.</summary>
+    [Test]
+    public async Task StartPassesBeforeTheFirstFirebaseCall_NothingSent_RowExpired()
+    {
+        await TokenAsync(31, "t");
+        var row = await PlanAsync(startsIn: TimeSpan.FromSeconds(5));
+        // Clock reads: the claim, the check before the recipient query, then the check right before the
+        // Firebase call, which already sees the start passed (a slow query).
+        var reads = 0;
+        var deliverer = new TaskReminderDeliverer(Contexts.CreateAsync, Sender,
+            () => ++reads <= 2 ? Now : row.PlannedStartUtc.AddSeconds(1), Logs.Add);
+
+        await deliverer.RunOnceAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+
+        Assert.That(Sender.Calls, Is.Empty);
+        Assert.That((await RowAsync(row.Id)).State, Is.EqualTo(TaskNotificationState.Expired));
+    }
+
+    /// <summary>More than 500 tokens: the first call crossed the start, so the second chunk is not sent and
+    /// the row is Sent (some phones accepted).</summary>
+    [Test]
+    public async Task StartPassesBetweenChunks_RemainingChunksNotSent_RowSent()
+    {
+        await using (var db = DbHelper.GetDbContext())
+        {
+            for (var i = 0; i < TaskReminderDeliverer.FcmBatchLimit + 1; i++)
+            {
+                db.DeviceTokens.Add(new Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities.DeviceToken
+                {
+                    AppId = TaskReminderDeliverer.EformAppId, InstallationId = $"bulk-{i}", FcmToken = $"bulk-{i}",
+                    SdkSiteId = 31, Platform = "android", TaskReminders = true,
+                    WorkflowState = Microting.eForm.Infrastructure.Constants.Constants.WorkflowStates.Created,
+                    CreatedAt = Now, UpdatedAt = Now, Version = 1
+                });
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        var row = await PlanAsync(startsIn: TimeSpan.FromSeconds(5));
+        Sender.BeforeSend = _ =>
+        {
+            Now = row.PlannedStartUtc.AddSeconds(1);
+            return Task.CompletedTask;
+        };
+
+        await RunAsync();
+
+        Assert.That(Sender.Calls, Has.Count.EqualTo(1), "the second chunk would start after the start");
+        Assert.That(Sender.Calls[0], Has.Count.EqualTo(TaskReminderDeliverer.FcmBatchLimit));
+        Assert.That((await RowAsync(row.Id)).State, Is.EqualTo(TaskNotificationState.Sent));
+    }
+
+    /// <summary>One prune fails (the token row vanished meanwhile); the next dead token's removal must still
+    /// be saved.</summary>
+    [Test]
+    public async Task OnePruneFails_TheNextDeadTokenIsStillRemoved()
+    {
+        var vanishing = await TokenAsync(31, "vanishing");
+        var dead = await TokenAsync(31, "dead");
+        await TokenAsync(31, "live");
+        Sender.Respond = m => m.Select(x => TokenOf(x) == "live"
+            ? new TaskReminderSendOutcome(true, null)
+            : new TaskReminderSendOutcome(false, MessagingErrorCode.Unregistered)).ToList();
+        Sender.BeforeSend = async _ =>
+        {
+            await using var db = DbHelper.GetDbContext();
+            // Test data in a private database: the row disappears under the deliverer, so its prune fails.
+            await db.DeviceTokens.Where(x => x.Id == vanishing.Id).ExecuteDeleteAsync();
+        };
+        var row = await PlanAsync();
+
+        await RunAsync();
+
+        Assert.That((await RowAsync(row.Id)).State, Is.EqualTo(TaskNotificationState.Sent));
+        Assert.That(await TokenStateAsync(dead.Id), Is.EqualTo(Removed), "the removal after a failed one is persisted");
+    }
+
+    [Test]
+    public async Task Expiry_IsTheRemainingTimeBeforeTheStart_AtLeastOneSecond()
+    {
+        await TokenAsync(31, "t");
+        await PlanAsync(eventId: 1, startsIn: TimeSpan.FromMinutes(3));
+
+        await RunAsync();
+
+        Assert.That(Sender.AllMessages().Single().Android.TimeToLive, Is.EqualTo(TimeSpan.FromMinutes(3)));
+        var row = new Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities.TaskNotification
+        {
+            AreaRulePlanningId = 1, PlanDayKey = "2026-11-23", PlannedStartUtc = Now, Title = "t", Body = "b"
+        };
+        Assert.That(TaskReminderMessages.TaskDue(row, "t", Now.AddMilliseconds(-200)).Android.TimeToLive,
+            Is.EqualTo(TimeSpan.FromSeconds(1)), "never zero or negative");
+    }
+
     [Test]
     public async Task OneOfTwoSenderIdMismatch_ThatTokenIsPruned()
     {
@@ -494,15 +666,19 @@ public class TaskReminderDelivererTests : TaskReminderTestBase
                 ["v"] = "1",
                 ["event_id"] = "7",
                 ["plan_day_key"] = "2026-11-23",
-                ["tag"] = "task:7:2026-11-23"
+                ["planned_start_utc"] = "2026-11-23T07:00:00Z",
+                ["tag"] = "task:7:2026-11-23:20261123T0700Z"
             }));
             Assert.That(message.Android.Priority, Is.EqualTo(Priority.High));
+            Assert.That(message.Android.TimeToLive, Is.EqualTo(TimeSpan.FromHours(24) + TimeSpan.FromMinutes(10)),
+                "expires 24 h after the start, the retry cut-off");
             Assert.That(message.Android.Notification, Is.Null);
             Assert.That(message.Apns.Aps.ContentAvailable, Is.True);
             Assert.That(message.Apns.Headers, Is.EquivalentTo(new Dictionary<string, string>
             {
                 ["apns-push-type"] = "background",
-                ["apns-priority"] = "5"
+                ["apns-priority"] = "5",
+                ["apns-expiration"] = Epoch(new DateTime(2026, 11, 24, 7, 0, 0, DateTimeKind.Utc))
             }));
         });
         Assert.That((await RowAsync(row.Id)).State, Is.EqualTo(TaskNotificationState.Withdrawn));

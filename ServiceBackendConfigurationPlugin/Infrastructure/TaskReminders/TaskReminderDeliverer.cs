@@ -209,14 +209,26 @@ public sealed class TaskReminderDeliverer
 
         var delivered = 0;
         var pruned = 0;
+        var tooLate = false;
         string transientCode = null;
         string permanentCode = null;
 
         for (var offset = 0; offset < tokens.Count; offset += FcmBatchLimit)
         {
+            // Re-check right before EACH Firebase call: a slow recipient query or an earlier chunk may
+            // have crossed the planned start (or the withdraw cut-off).
+            var sendNow = _utcNow();
+            if (sendNow >= giveUpAt)
+            {
+                tooLate = true;
+                break;
+            }
+
             var chunk = tokens.Skip(offset).Take(FcmBatchLimit).ToList();
             var messages = chunk
-                .Select(t => withdraw ? TaskReminderMessages.TaskWithdrawn(row, t.FcmToken) : TaskReminderMessages.TaskDue(row, t.FcmToken))
+                .Select(t => withdraw
+                    ? TaskReminderMessages.TaskWithdrawn(row, t.FcmToken, sendNow)
+                    : TaskReminderMessages.TaskDue(row, t.FcmToken, sendNow))
                 .ToList();
 
             IReadOnlyList<TaskReminderSendOutcome> outcomes;
@@ -306,11 +318,21 @@ public sealed class TaskReminderDeliverer
 
         tally.Pruned += pruned;
         now = _utcNow();
-        if (delivered > 0 || tokens.Count == 0)
+        if (tooLate && delivered == 0)
         {
-            // Delivered to at least one phone, or nobody to tell (no opted-in token): done. Known limit:
-            // a phone that failed transiently in the same call is not retried (one row per reminder,
-            // not per phone).
+            // Nothing left before the start (cut-off): a reminder expires, a withdraw fails.
+            await GiveUpAsync(db, row, withdraw, now, tally, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        // A withdraw stays retryable while any phone failed transiently (repeating a silent withdraw is
+        // harmless); otherwise that phone would keep the notification on screen.
+        var withdrawIncomplete = withdraw && transientCode != null && !tooLate;
+        if ((delivered > 0 && !withdrawIncomplete) || tokens.Count == 0)
+        {
+            // Delivered to at least one phone, or nobody to tell (no opted-in token): done. Known limit
+            // for a REMINDER: a phone that failed transiently in the same call is not retried (one row per
+            // reminder, not per phone). Chunks not sent because the start passed meanwhile are dropped.
             // A send that returned after the planned start is still marked Sent: it left before the
             // start check failed, and it is never sent again.
             if (withdraw)
@@ -406,7 +428,13 @@ public sealed class TaskReminderDeliverer
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            db.ChangeTracker.Clear();
+            // Detach only what the failed save left pending (the failed token, a version row); the other
+            // tokens of this row stay tracked, so their removals are still saved.
+            foreach (var entry in db.ChangeTracker.Entries().Where(x => x.State != EntityState.Unchanged).ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+
             _log($"warn: TaskReminderDeliverer: row {row.Id} site {row.SdkSiteId}: device token {token.Id} could not be removed ({e.GetType().Name})");
             return false;
         }
