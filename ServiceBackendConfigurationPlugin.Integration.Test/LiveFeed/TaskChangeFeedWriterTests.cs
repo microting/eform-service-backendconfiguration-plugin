@@ -77,6 +77,53 @@ public class TaskChangeFeedWriterTests : LiveFeedTestBase
         Assert.That(row.PlanDayKey, Is.EqualTo("2026-11-21"));
     }
 
+    /// <summary>
+    /// Several live tasks can share one items-planning planning (see HiddenOverdueCaseRetractorTests),
+    /// possibly on different properties. A hint that names only the planning (completion, sweep) must
+    /// reach every live owner, each routed by its own property.
+    /// </summary>
+    [Test]
+    public async Task Append_PlanningSharedByTwoLiveTasksOnTwoProperties_WritesARowForEach()
+    {
+        await using var db = DbHelper.GetDbContext();
+        var first = await CreatePropertyAsync(db);
+        var second = await CreatePropertyAsync(db);
+        var planningId = NextPlanningId();
+        var firstTask = await CreateTaskAsync(db, first.Id, planningId);
+        var secondTask = await CreateTaskAsync(db, second.Id, planningId);
+        await CreateTaskAsync(db, second.Id, planningId, removed: true);
+
+        await Writer().AppendAsync("UnitTest", new TaskChangeHint(
+            TaskChangeKinds.Changed, PropertyId: first.Id, ItemPlanningId: planningId, ComplianceId: 8));
+
+        var rows = await FeedRowsAsync();
+        Assert.That(rows.Select(x => (x.PropertyId, x.AreaRulePlanningId, x.ComplianceId)), Is.EquivalentTo(new[]
+        {
+            ((int?)first.Id, (int?)firstTask.Id, (int?)8),
+            (second.Id, secondTask.Id, 8)
+        }), "one row per live owner, the removed owner gets none");
+    }
+
+    [Test]
+    public async Task Append_SweptPlanningOwnedByTwoRemovedTasks_WritesARemovedRowForEach()
+    {
+        await using var db = DbHelper.GetDbContext();
+        var first = await CreatePropertyAsync(db);
+        var second = await CreatePropertyAsync(db);
+        var planningId = NextPlanningId();
+        var firstTask = await CreateTaskAsync(db, first.Id, planningId, removed: true);
+        var secondTask = await CreateTaskAsync(db, second.Id, planningId, removed: true);
+
+        await Writer().AppendAsync(SearchListJob.ShowExpireDateSweepSource, SearchListJob.SweptPlanningHint(planningId));
+
+        var rows = await FeedRowsAsync();
+        Assert.That(rows.Select(x => (x.Kind, x.PropertyId, x.AreaRulePlanningId)), Is.EquivalentTo(new[]
+        {
+            (TaskChangeKinds.Removed, (int?)first.Id, (int?)firstTask.Id),
+            (TaskChangeKinds.Removed, second.Id, secondTask.Id)
+        }));
+    }
+
     [Test]
     public async Task Append_PropertyCannotBeDetermined_WritesNoRow_LogsDebug_DoesNotThrow()
     {

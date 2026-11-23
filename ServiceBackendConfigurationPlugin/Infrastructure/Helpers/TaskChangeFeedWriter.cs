@@ -40,8 +40,9 @@ namespace ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
 
 /// <summary>
 /// One "something changed" hint for the live-update feed, with whatever ids the call site already
-/// has. <see cref="TaskChangeFeedWriter"/> fills in the rest: a missing task (AreaRulePlanning) id or
-/// property id comes from <see cref="ItemPlanningId"/>; the plan day key is <see cref="Deadline"/>'s date.
+/// has. <see cref="TaskChangeFeedWriter"/> fills in the rest: without a task (AreaRulePlanning) id the
+/// hint goes to every task that owns <see cref="ItemPlanningId"/>, each on its own property; a missing
+/// property id also comes from there. The plan day key is <see cref="Deadline"/>'s date.
 /// </summary>
 public sealed record TaskChangeHint(
     string Kind,
@@ -205,20 +206,13 @@ public sealed class TaskChangeFeedWriter
             var rows = new List<FeedRow>();
             foreach (var hint in pending)
             {
-                var task = hint.ItemPlanningId is { } planningId && tasks.TryGetValue(planningId, out var t) ? t : default;
-                var propertyId = hint.PropertyId is > 0 ? hint.PropertyId : task.PropertyId is > 0 ? task.PropertyId : null;
-                if (propertyId == null)
+                var hintRows = Route(hint, tasks);
+                if (hintRows.Count == 0)
                 {
                     unrouted++;
-                    continue;
                 }
 
-                rows.Add(new FeedRow(
-                    hint.Kind,
-                    propertyId.Value,
-                    hint.AreaRulePlanningId ?? task.Id,
-                    hint.Deadline?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    hint.ComplianceId));
+                rows.AddRange(hintRows);
             }
 
             if (unrouted > 0)
@@ -280,7 +274,50 @@ public sealed class TaskChangeFeedWriter
 
     private readonly record struct FeedRow(string Kind, int PropertyId, int? AreaRulePlanningId, string PlanDayKey, int? ComplianceId);
 
-    private readonly record struct TaskIds(int? Id, int? PropertyId);
+    private readonly record struct TaskIds(int Id, int PropertyId);
+
+    /// <summary>
+    /// The rows of one hint. A hint that names its task gives one row for that task. A hint that names
+    /// only the planning gives one row per owner the lookup found (several tasks can share a planning,
+    /// possibly on different properties), each routed by the owner's own property. A hint without a
+    /// task and without owners gives a row without a task when its property is known. No property: no row.
+    /// </summary>
+    private static List<FeedRow> Route(TaskChangeHint hint, Dictionary<int, List<TaskIds>> tasks)
+    {
+        var owners = hint.ItemPlanningId is { } planningId && tasks.TryGetValue(planningId, out var found)
+            ? found
+            : [];
+        var dayKey = hint.Deadline?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var hintProperty = hint.PropertyId is > 0 ? hint.PropertyId : null;
+        var rows = new List<FeedRow>();
+
+        if (hint.AreaRulePlanningId is { } taskId)
+        {
+            var owner = owners.FirstOrDefault(x => x.Id == taskId);
+            var propertyId = hintProperty ?? (owner.PropertyId > 0 ? owner.PropertyId : null);
+            if (propertyId != null)
+            {
+                rows.Add(new FeedRow(hint.Kind, propertyId.Value, taskId, dayKey, hint.ComplianceId));
+            }
+        }
+        else if (owners.Count > 0)
+        {
+            foreach (var owner in owners)
+            {
+                var propertyId = owner.PropertyId > 0 ? owner.PropertyId : hintProperty;
+                if (propertyId != null)
+                {
+                    rows.Add(new FeedRow(hint.Kind, propertyId.Value, owner.Id, dayKey, hint.ComplianceId));
+                }
+            }
+        }
+        else if (hintProperty != null)
+        {
+            rows.Add(new FeedRow(hint.Kind, hintProperty.Value, null, dayKey, hint.ComplianceId));
+        }
+
+        return rows;
+    }
 
     /// <summary>Distinct rows; a property with more than <see cref="CoalesceAbovePerProperty"/> becomes one <c>property</c> row.</summary>
     private static IEnumerable<FeedRow> Coalesce(IEnumerable<FeedRow> rows)
@@ -302,10 +339,12 @@ public sealed class TaskChangeFeedWriter
     }
 
     /// <summary>
-    /// The task (AreaRulePlanning) of each planning a hint still needs ids for, in batched indexed
-    /// lookups on ItemPlanningId. Several tasks can share a planning: a live one wins, then the lowest id.
+    /// The owning tasks (AreaRulePlannings) of each planning a hint still needs ids for, in one indexed
+    /// query on ItemPlanningId per batch of at most 500 plannings. Several tasks can share a planning:
+    /// every live owner is kept; a planning without a live owner keeps its removed owners (the
+    /// ShowExpireDate sweep deletes exactly such plannings).
     /// </summary>
-    private static async Task<Dictionary<int, TaskIds>> LoadTasksAsync(
+    private static async Task<Dictionary<int, List<TaskIds>>> LoadTasksAsync(
         BackendConfigurationPnDbContext dbContext, List<TaskChangeHint> hints, CancellationToken cancellationToken)
     {
         var planningIds = hints
@@ -313,7 +352,7 @@ public sealed class TaskChangeFeedWriter
             .Select(x => x.ItemPlanningId!.Value)
             .Distinct()
             .ToList();
-        var result = new Dictionary<int, TaskIds>();
+        var result = new Dictionary<int, List<TaskIds>>();
         foreach (var batch in PlanningOwnershipHelper.BatchPlanningIds(planningIds))
         {
             var tasks = await dbContext.AreaRulePlannings
@@ -322,9 +361,10 @@ public sealed class TaskChangeFeedWriter
                 .Select(x => new { x.Id, x.ItemPlanningId, x.PropertyId, Live = x.WorkflowState != Constants.WorkflowStates.Removed })
                 .ToListAsync(cancellationToken)
                 .ConfigureAwait(false);
-            foreach (var task in tasks.OrderByDescending(x => x.Live).ThenBy(x => x.Id))
+            foreach (var planning in tasks.GroupBy(x => x.ItemPlanningId))
             {
-                result.TryAdd(task.ItemPlanningId, new TaskIds(task.Id, task.PropertyId));
+                var owners = planning.Any(x => x.Live) ? planning.Where(x => x.Live) : planning;
+                result[planning.Key] = owners.OrderBy(x => x.Id).Select(x => new TaskIds(x.Id, x.PropertyId)).ToList();
             }
         }
 
