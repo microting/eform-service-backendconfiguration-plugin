@@ -24,6 +24,7 @@ SOFTWARE.
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Threading;
@@ -87,6 +88,11 @@ public sealed class TaskChangeFeedWriter
     private readonly Action<string> _debug;
     private readonly Func<DateTime> _utcNow;
     private readonly object _warningGate = new();
+
+    // One write at a time. A write holds the gate until it has really ended, also after its caller
+    // stopped waiting for it, so at most one write is ever running past the budget.
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private Task _abandonedWrite;
     private DateTime? _lastWarningAt;
     private int _suppressedFailures;
 
@@ -129,6 +135,13 @@ public sealed class TaskChangeFeedWriter
 
     public Task AppendAsync(string source, TaskChangeHint hint) => AppendAsync(source, [hint]);
 
+    /// <summary>
+    /// Writes the hints, or gives up: the caller gets control back within the budget (a hard cutoff;
+    /// token and timeouts alone are not one, since MySqlConnector allows a cancellation grace period
+    /// after a command timeout). A write that outlives the budget is abandoned: it keeps running on its
+    /// own, disposes its context, observes its own exceptions and ends through its timeouts. Until it
+    /// has ended, new calls are skipped at once. Never throws.
+    /// </summary>
     public async Task AppendAsync(string source, IReadOnlyCollection<TaskChangeHint> hints)
     {
         try
@@ -139,7 +152,52 @@ public sealed class TaskChangeFeedWriter
                 return;
             }
 
-            using var budget = new CancellationTokenSource(WriteBudget);
+            if (Volatile.Read(ref _abandonedWrite) is { IsCompleted: false })
+            {
+                ReportFailure(source, new TimeoutException(
+                    "an earlier feed write is still running past its budget; this write is skipped"));
+                return;
+            }
+
+            var deadline = Stopwatch.StartNew();
+            if (!await _writeGate.WaitAsync(WriteBudget).ConfigureAwait(false))
+            {
+                ReportFailure(source, new TimeoutException("another feed write held the writer for the whole budget; this write is skipped"));
+                return;
+            }
+
+            var remaining = WriteBudget - deadline.Elapsed;
+            Task write;
+            try
+            {
+                write = Task.Run(() => WriteAsync(source, pending, remaining));
+            }
+            catch
+            {
+                _writeGate.Release();
+                throw;
+            }
+
+            if (remaining <= TimeSpan.Zero
+                || await Task.WhenAny(write, Task.Delay(remaining)).ConfigureAwait(false) != write)
+            {
+                Volatile.Write(ref _abandonedWrite, write);
+                ReportFailure(source, new TimeoutException(
+                    $"the feed write did not finish within {WriteBudget.TotalSeconds:0} s; the caller stopped waiting and later writes are skipped until it has ended"));
+            }
+        }
+        catch (Exception ex)
+        {
+            ReportFailure(source, ex);
+        }
+    }
+
+    /// <summary>The write itself. Owns its context, releases the gate when it has ended, never faults.</summary>
+    private async Task WriteAsync(string source, List<TaskChangeHint> pending, TimeSpan budgetLeft)
+    {
+        try
+        {
+            using var budget = new CancellationTokenSource(budgetLeft > TimeSpan.Zero ? budgetLeft : TimeSpan.Zero);
             await using var dbContext = await _createContextAsync(budget.Token).ConfigureAwait(false);
             var tasks = await LoadTasksAsync(dbContext, pending, budget.Token).ConfigureAwait(false);
 
@@ -178,6 +236,10 @@ public sealed class TaskChangeFeedWriter
         catch (Exception ex)
         {
             ReportFailure(source, ex);
+        }
+        finally
+        {
+            _writeGate.Release();
         }
     }
 

@@ -30,6 +30,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using ServiceBackendConfigurationPlugin.Infrastructure.Helpers;
@@ -63,5 +64,61 @@ public class TaskChangeFeedWriterTimeoutTests
         Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(6.5)),
             "a stalled database must not hold up the job or handler beyond the writer's budget");
         Assert.That(warnings, Has.Count.EqualTo(1));
+    }
+
+    /// <summary>
+    /// The hard cutoff, tested at the context seam: a write that blocks and ignores cancellation (a
+    /// server that authenticated and then stopped answering, where MySqlConnector's cancellation
+    /// grace period lets a command outlive its timeout). A fake MySQL server that completes the
+    /// handshake and authentication is too heavy for a robust small test. The caller must get control
+    /// back at the budget; while the abandoned write still runs, further calls are skipped at once;
+    /// once it has ended, writes are tried again.
+    /// </summary>
+    [Test]
+    public async Task Append_WriteIgnoresCancellation_CallerReturnsAtTheBudget_NextCallSkippedUntilItEnds()
+    {
+        using var release = new ManualResetEventSlim();
+        var attempts = 0;
+        var warnings = new List<string>();
+        var now = new DateTime(2026, 11, 23, 9, 0, 0, DateTimeKind.Utc);
+        var writer = new TaskChangeFeedWriter(
+            () =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                {
+                    release.Wait(TimeSpan.FromSeconds(30)); // blocks and ignores every token
+                }
+
+                throw new InvalidOperationException("no database in this test");
+            },
+            warnings.Add, _ => { }, () => now);
+        var hint = new TaskChangeHint(TaskChangeKinds.Changed, PropertyId: 1, AreaRulePlanningId: 2);
+
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            await Assert.DoesNotThrowAsync(() => writer.AppendAsync("UnitTest", hint));
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(6.5)), "the caller gets control back at the budget");
+            Assert.That(warnings, Has.Count.EqualTo(1), "the abandoned write is reported through the throttled warning");
+
+            stopwatch.Restart();
+            await Assert.DoesNotThrowAsync(() => writer.AppendAsync("UnitTest", hint));
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(1)), "skipped at once, not queued behind the stuck write");
+            Assert.That(Volatile.Read(ref attempts), Is.EqualTo(1), "no second write while the first one still runs");
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        // The abandoned write ends (its factory throws); after that a call is tried again.
+        var retried = Stopwatch.StartNew();
+        while (Volatile.Read(ref attempts) < 2 && retried.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await writer.AppendAsync("UnitTest", hint);
+            await Task.Delay(50);
+        }
+
+        Assert.That(Volatile.Read(ref attempts), Is.EqualTo(2), "writes resume once the abandoned one has ended");
     }
 }

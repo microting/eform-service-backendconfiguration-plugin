@@ -99,6 +99,34 @@ public class SearchListJob : IJob
             compliance.Deadline, compliance.Id);
 
     /// <summary>
+    /// Runs <paramref name="moveOne"/> for each item in order and appends the hints of the moves that
+    /// returned one in ONE call to <paramref name="append"/>, in a finally: when a later move throws,
+    /// the moves already saved are still announced, and the exception propagates unchanged. A move
+    /// that returns null (skipped) gives no hint.
+    /// </summary>
+    public static async Task ForEachThenAppendAsync<T>(
+        IEnumerable<T> items, Func<T, Task<TaskChangeHint>> moveOne,
+        Func<IReadOnlyCollection<TaskChangeHint>, Task> append)
+    {
+        var hints = new List<TaskChangeHint>();
+        try
+        {
+            foreach (var item in items)
+            {
+                var hint = await moveOne(item);
+                if (hint != null)
+                {
+                    hints.Add(hint);
+                }
+            }
+        }
+        finally
+        {
+            await append(hints);
+        }
+    }
+
+    /// <summary>
     /// The sweep soft-deleted this planning: the whole task it belongs to is gone. The writer finds the
     /// task and property; a planning no task references gives no row.
     /// </summary>
@@ -367,8 +395,9 @@ public class SearchListJob : IJob
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                     .ToListAsync();
 
-                var overdueMoveHints = new List<TaskChangeHint>();
-                foreach (var compliance in complianceList)
+                // The hints of the moves that were saved are appended once, also when a later move
+                // throws (the writer never throws, so the move's exception propagates unchanged).
+                await ForEachThenAppendAsync(complianceList, async compliance =>
                 {
                     var areaRulePlanningQuery = _backendConfigurationDbContext.AreaRulePlannings
                         .Include(x => x.AreaRulePlanningTags)
@@ -381,7 +410,7 @@ public class SearchListJob : IJob
 
                     if (!areaRulePlanning.ComplianceEnabled)
                     {
-                        continue;
+                        return null;
                     }
 
                     var microtingSdkCaseId = compliance.MicrotingSdkCaseId;
@@ -412,11 +441,8 @@ public class SearchListJob : IJob
                     var comp = await _backendConfigurationDbContext.Compliances.FirstAsync(x => x.Id == compliance.Id);
                     comp.MovedToExpiredFolder = true;
                     await comp.Update(_backendConfigurationDbContext);
-                    overdueMoveHints.Add(OverdueMoveHint(compliance, areaRulePlanning.Id));
-                }
-
-                // Best effort, never throws; one property row instead of many for a busy property.
-                await _taskChangeFeedWriter.AppendAsync(OverdueMoveSource, overdueMoveHints);
+                    return OverdueMoveHint(compliance, areaRulePlanning.Id);
+                }, hints => _taskChangeFeedWriter.AppendAsync(OverdueMoveSource, hints));
                 break;
             }
             case 8:
