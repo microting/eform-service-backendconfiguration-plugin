@@ -35,6 +35,7 @@ using Microting.EformBackendConfigurationBase.Infrastructure.Enum;
 using Microting.eFormCaseTemplateBase.Infrastructure.Data.Factories;
 using QuestPDF.Infrastructure;
 using Sentry;
+using ServiceBackendConfigurationPlugin.Infrastructure.TaskReminders;
 using ServiceBackendConfigurationPlugin.Resources;
 using ServiceBackendConfigurationPlugin.Scheduler.Jobs;
 
@@ -79,6 +80,7 @@ public class Core : ISdkEventHandler
     private BackendConfigurationPnDbContext _dbContext;
     private Timer _scheduleTimer;
     private Timer _driveScheduleTimer;
+    private TaskReminderDeliveryLoop _taskReminderLoop;
     private ItemsPlanningPnDbContext _itemsPlanningDbContext;
     private BackendConfigurationDbContextHelper _backendConfigurationBackendConfigurationDbContextHelper;
     private ItemsPlanningDbContextHelper _itemsPlanningDbContextHelper;
@@ -314,6 +316,12 @@ public class Core : ISdkEventHandler
                 _bus = _container.Resolve<IBus>();
 
                 ConfigureScheduler();
+
+                // Task reminders (package 12): the web host plans them into TaskNotifications, this
+                // loop sends them every 2 s. Self-contained: its own contexts and timer; it never throws.
+                _taskReminderLoop = new TaskReminderDeliveryLoop(
+                    new TaskReminderContextSource(connectionString).CreateAsync, new FirebaseTaskReminderSender());
+                _taskReminderLoop.Start();
                 //ReplaceCreateTask(connectionString, sdkConnectionString).GetAwaiter().GetResult();
             }
 
@@ -337,6 +345,8 @@ public class Core : ISdkEventHandler
             _coreStatChanging = true;
 
             _coreAvailable = false;
+
+            _taskReminderLoop?.Stop(TimeSpan.FromSeconds(10));
 
             while (_coreThreadRunning)
             {
