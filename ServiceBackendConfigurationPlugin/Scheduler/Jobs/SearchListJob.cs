@@ -39,6 +39,7 @@ using Microting.eForm.Infrastructure.Constants;
 using Microting.eForm.Infrastructure.Data.Entities;
 using Microting.EformAngularFrontendBase.Infrastructure.Data;
 using Microting.eFormApi.BasePn.Infrastructure.Helpers;
+using TaskChangeKinds = Microting.EformBackendConfigurationBase.Infrastructure.Const.TaskChangeKinds;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Data;
@@ -61,12 +62,20 @@ public class SearchListJob : IJob
     private readonly ItemsPlanningPnDbContext _itemsPlanningPnDbContext;
     private readonly BaseDbContext _baseDbContext;
     private readonly CaseTemplateDbContextHelper _caseTemplateDbContextHelper;
+    private readonly TaskChangeFeedWriter _taskChangeFeedWriter;
+
+    /// <summary>Feed source of the hour-9 overdue move.</summary>
+    public const string OverdueMoveSource = "SearchListJob.OverdueMove";
+
+    /// <summary>Feed source of the hour-18 ShowExpireDate sweep.</summary>
+    public const string ShowExpireDateSweepSource = "SearchListJob.ShowExpireDateSweep";
 
     public SearchListJob(
         BackendConfigurationDbContextHelper dbContextHelper, ChemicalDbContextHelper chemicalDbContextHelper,
         eFormCore.Core core, ItemsPlanningDbContextHelper itemsPlanningDbContextHelper, BaseDbContext baseDbContext,
-        CaseTemplateDbContextHelper caseTemplateDbContextHelper)
+        CaseTemplateDbContextHelper caseTemplateDbContextHelper, TaskChangeFeedWriter taskChangeFeedWriter)
     {
+        _taskChangeFeedWriter = taskChangeFeedWriter;
         _core = core;
         _baseDbContext = baseDbContext;
         _caseTemplateDbContextHelper = caseTemplateDbContextHelper;
@@ -83,6 +92,50 @@ public class SearchListJob : IJob
     {
         await ExecuteUpdateProperties();
     }
+
+    /// <summary>The overdue move changed this occurrence (its case went to the overdue folder).</summary>
+    public static TaskChangeHint OverdueMoveHint(Compliance compliance, int areaRulePlanningId) =>
+        new(TaskChangeKinds.Changed, compliance.PropertyId, areaRulePlanningId, compliance.PlanningId,
+            compliance.Deadline, compliance.Id);
+
+    /// <summary>
+    /// Runs <paramref name="moveOne"/> for each item in order and appends the hints of the moves that
+    /// returned one in ONE call to <paramref name="append"/>, in a finally: when a later move throws,
+    /// the moves already saved are still announced, and the exception propagates unchanged. A move
+    /// that returns null (skipped) gives no hint.
+    /// </summary>
+    public static async Task ForEachThenAppendAsync<T>(
+        IEnumerable<T> items, Func<T, Task<TaskChangeHint>> moveOne,
+        Func<IReadOnlyCollection<TaskChangeHint>, Task> append)
+    {
+        var hints = new List<TaskChangeHint>();
+        try
+        {
+            foreach (var item in items)
+            {
+                var hint = await moveOne(item);
+                if (hint != null)
+                {
+                    hints.Add(hint);
+                }
+            }
+        }
+        finally
+        {
+            await append(hints);
+        }
+    }
+
+    /// <summary>
+    /// The sweep soft-deleted this planning: the whole task it belongs to is gone. The writer finds the
+    /// task and property; a planning no task references gives no row.
+    /// </summary>
+    public static TaskChangeHint SweptPlanningHint(int planningId) =>
+        new(TaskChangeKinds.Removed, ItemPlanningId: planningId);
+
+    /// <summary>One hint per planning the sweep actually deleted; a planning that failed was not deleted.</summary>
+    public static List<TaskChangeHint> SweepHints(IEnumerable<PlanningSweepResult> sweepResults) =>
+        sweepResults.Where(x => x.Succeeded).Select(x => SweptPlanningHint(x.PlanningId)).ToList();
 
     private async Task ExecuteUpdateProperties()
     {
@@ -246,6 +299,9 @@ public class SearchListJob : IJob
                             () => _itemsPlanningPnDbContext.ChangeTracker.Clear())
                             .ConfigureAwait(false);
 
+                        // Best effort, never throws; written before the report mail, which can throw.
+                        await _taskChangeFeedWriter.AppendAsync(ShowExpireDateSweepSource, SweepHints(sweepResults));
+
                         foreach (var sweepResult in sweepResults)
                         {
                             if (sweepResult.Succeeded)
@@ -339,7 +395,9 @@ public class SearchListJob : IJob
                     .Where(x => x.WorkflowState != Constants.WorkflowStates.Removed)
                     .ToListAsync();
 
-                foreach (var compliance in complianceList)
+                // The hints of the moves that were saved are appended once, also when a later move
+                // throws (the writer never throws, so the move's exception propagates unchanged).
+                await ForEachThenAppendAsync(complianceList, async compliance =>
                 {
                     var areaRulePlanningQuery = _backendConfigurationDbContext.AreaRulePlannings
                         .Include(x => x.AreaRulePlanningTags)
@@ -352,7 +410,7 @@ public class SearchListJob : IJob
 
                     if (!areaRulePlanning.ComplianceEnabled)
                     {
-                        continue;
+                        return null;
                     }
 
                     var microtingSdkCaseId = compliance.MicrotingSdkCaseId;
@@ -383,7 +441,8 @@ public class SearchListJob : IJob
                     var comp = await _backendConfigurationDbContext.Compliances.FirstAsync(x => x.Id == compliance.Id);
                     comp.MovedToExpiredFolder = true;
                     await comp.Update(_backendConfigurationDbContext);
-                }
+                    return OverdueMoveHint(compliance, areaRulePlanning.Id);
+                }, hints => _taskChangeFeedWriter.AppendAsync(OverdueMoveSource, hints));
                 break;
             }
             case 8:

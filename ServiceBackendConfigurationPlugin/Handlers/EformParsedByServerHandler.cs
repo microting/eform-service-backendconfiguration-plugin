@@ -28,6 +28,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microting.eForm.Infrastructure;
 using Microting.eForm.Infrastructure.Constants;
+using TaskChangeKinds = Microting.EformBackendConfigurationBase.Infrastructure.Const.TaskChangeKinds;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data;
 using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Data;
@@ -51,9 +52,13 @@ public static class DateTimeExtensions
 public class EformParsedByServerHandler(
     eFormCore.Core sdkCore,
     ItemsPlanningDbContextHelper itemsPlanningDbContextHelper,
-    BackendConfigurationDbContextHelper backendConfigurationDbContextHelper)
+    BackendConfigurationDbContextHelper backendConfigurationDbContextHelper,
+    TaskChangeFeedWriter taskChangeFeedWriter)
     : IHandleMessages<EformParsedByServer>
 {
+    /// <summary>Feed source of the new-occurrence hint.</summary>
+    public const string FeedSource = "EformParsedByServerHandler";
+
     public async Task Handle(EformParsedByServer message)
     {
         await using MicrotingDbContext sdkDbContext = sdkCore.DbContextHelper.GetDbContext();
@@ -201,6 +206,11 @@ public class EformParsedByServerHandler(
 
                         await compliance.Create(backendConfigurationPnDbContext);
                         Console.WriteLine("info: We created a compliance");
+
+                        // A new occurrence appeared. Best effort, never throws.
+                        await taskChangeFeedWriter.AppendAsync(FeedSource, new TaskChangeHint(
+                            TaskChangeKinds.Changed, property.Id, areaRulePlanning.Id, compliance.PlanningId,
+                            compliance.Deadline, compliance.Id));
 
                     } catch (Exception ex)
                     {

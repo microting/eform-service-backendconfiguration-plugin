@@ -23,6 +23,7 @@ SOFTWARE.
 */
 
 using Rebus.Bus;
+using TaskChangeKinds = Microting.EformBackendConfigurationBase.Infrastructure.Const.TaskChangeKinds;
 using ServiceBackendConfigurationPlugin.Infrastructure;
 
 namespace ServiceBackendConfigurationPlugin.Handlers;
@@ -31,9 +32,11 @@ using Infrastructure.Helpers;
 using Messages;
 using Microsoft.EntityFrameworkCore;
 using Microting.eForm.Infrastructure.Constants;
+using Microting.EformBackendConfigurationBase.Infrastructure.Data.Entities;
 using Microting.ItemsPlanningBase.Infrastructure.Enums;
 using Rebus.Handlers;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,9 +45,12 @@ public class EFormCompletedHandler(
     eFormCore.Core sdkCore,
     ItemsPlanningDbContextHelper itemsPlanningDbContextHelper,
     BackendConfigurationDbContextHelper backendConfigurationDbContextHelper,
-    IBus bus)
+    IBus bus,
+    TaskChangeFeedWriter taskChangeFeedWriter)
     : IHandleMessages<eFormCompleted>
 {
+    /// <summary>Feed source of the completed-occurrence hint.</summary>
+    public const string FeedSource = "EFormCompletedHandler";
 
     public async Task Handle(eFormCompleted message)
     {
@@ -257,6 +263,7 @@ public class EFormCompletedHandler(
                 var oneCompliance =
                     await backendConfigurationPnDbContext.Compliances.FirstOrDefaultAsync(x =>
                         x.PlanningCaseSiteId == planningCaseSite.PlanningCaseId);
+                var completedHints = new List<TaskChangeHint>();
 
                 if (oneCompliance == null)
                 {
@@ -280,6 +287,7 @@ public class EFormCompletedHandler(
                                 await IsCaseCompleted(sdkDbContext, dbCompliance.MicrotingSdkCaseId));
                             await dbCompliance.Delete(backendConfigurationPnDbContext);
                             Console.WriteLine($"info: Deleted compliance {compliance.Id}");
+                            completedHints.Add(CompletedHint(dbCompliance));
                         }
                     }
                 }
@@ -289,6 +297,7 @@ public class EFormCompletedHandler(
                         await IsCaseCompleted(sdkDbContext, oneCompliance.MicrotingSdkCaseId));
                     await oneCompliance.Delete(backendConfigurationPnDbContext);
                     Console.WriteLine($"info: Deleted compliance {oneCompliance.Id}");
+                    completedHints.Add(CompletedHint(oneCompliance));
                 }
 
                 var areaRulePlanning = await backendConfigurationPnDbContext.AreaRulePlannings.AsNoTracking()
@@ -312,9 +321,22 @@ public class EFormCompletedHandler(
                 planningSite.Status = 100;
                 Console.WriteLine($"info: Updated planningSite {planningSite.Id} to completed");
                 await planningSite.Update(backendConfigurationPnDbContext);
+
+                // The occurrence is completed: still on the list, now done. Best effort, never throws.
+                await taskChangeFeedWriter.AppendAsync(FeedSource, completedHints);
             }
         }
     }
+
+    /// <summary>
+    /// <c>changed</c>, not <c>removed</c>: the soft-deleted Compliance marks the occurrence completed, and
+    /// a completed occurrence stays in the list as done. No plan day key: a completed occurrence is shown
+    /// on its done date, not its deadline, so the hint carries ids only and the client refetches the
+    /// event. The writer looks up the task from PlanningId.
+    /// </summary>
+    private static TaskChangeHint CompletedHint(Compliance compliance) =>
+        new(TaskChangeKinds.Changed, compliance.PropertyId, ItemPlanningId: compliance.PlanningId,
+            ComplianceId: compliance.Id);
 
     /// <summary>#588 — whether the case a compliance stores is completed itself.</summary>
     private static Task<bool> IsCaseCompleted(
